@@ -1,0 +1,33 @@
+# Beyonder frontend — static export build.
+# Produces /app/out which is mounted out to ../frontend/out on the host.
+# Prod serves these files via FastAPI's StaticFiles or any static host.
+
+FROM node:22.13-alpine AS builder
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+COPY package.json pnpm-lock.yaml* .npmrc ./
+RUN if [ -f pnpm-lock.yaml ]; then \
+      pnpm install --frozen-lockfile --ignore-scripts --prod=false ; \
+    else \
+      pnpm install --no-frozen-lockfile --ignore-scripts --prod=false ; \
+    fi
+
+COPY . .
+
+# Next inlines NEXT_PUBLIC_* at build time, so these must be build args.
+# Passing them as runtime env does nothing once the export is written.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ARG NEXT_PUBLIC_BASE_PATH=
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+# Static export. Next writes ./out; stash it somewhere the host bind mount
+# cannot shadow, because compose mounts an empty ./frontend/out over /app/out.
+RUN pnpm build && mv out /app/export && touch /app/export/.nojekyll
+
+# Running the container copies the export onto the mounted host directory.
+CMD ["sh", "-c", "rm -rf /app/out/* /app/out/.[!.]* 2>/dev/null; cp -a /app/export/. /app/out/ && ls -la /app/out"]

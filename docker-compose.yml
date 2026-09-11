@@ -1,0 +1,102 @@
+# Beyonder local infra
+# All npm/node work runs in containers — never on host.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: beyonder-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: beyonder
+      POSTGRES_PASSWORD: beyonder
+      POSTGRES_DB: beyonder
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "beyonder"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: beyonder-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    environment:
+      QDRANT__LOG_LEVEL: INFO
+
+  # The deployed API image, runnable locally to test exactly what ships.
+  #   docker compose --profile api up --build api
+  api:
+    profiles: ["api"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: beyonder-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://beyonder:beyonder@postgres:5432/beyonder
+      QDRANT_URL: http://qdrant:6333
+      CORS_ORIGINS: http://localhost:3000
+      SCRAPER_BACKEND: http
+      PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+
+  # Frontend dev — only inside container. Host never installs npm packages.
+  # Bind mount is read-only on node_modules (pnpm store stays in container volume).
+  frontend-dev:
+    profiles: ["frontend"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: beyonder-frontend-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app:rw
+      - frontend_node_modules:/app/node_modules
+      - frontend_pnpm_store:/root/.local/share/pnpm/store
+    environment:
+      NEXT_PUBLIC_API_URL: http://host.docker.internal:8000
+      # Refuse to run any postinstall scripts. Belt-and-braces on top of npmrc.
+      npm_config_ignore_scripts: "true"
+    # Drop privileges + read-only root FS where possible
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Frontend prod build — produces static export, then exits.
+  frontend-build:
+    profiles: ["build"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.build
+      # Build args, not runtime env: Next bakes NEXT_PUBLIC_* into the export.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-}
+    container_name: beyonder-frontend-build
+    volumes:
+      - ./frontend/out:/app/out
+
+volumes:
+  frontend_node_modules:
+  frontend_pnpm_store:

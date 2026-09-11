@@ -1,0 +1,15 @@
+# Beyonder dev / test / eval extras.
+# Install on top of requirements.txt:
+#     pip install -r requirements.txt -r requirements-dev.txt
+# The deployed image installs only requirements.txt.
+
+# Tests
+pytest==8.3.4
+pytest-asyncio==0.24.0
+
+# URL ingestion with a real browser. Needs `playwright install chromium`.
+# Production runs SCRAPER_BACKEND=http instead and skips this.
+playwright==1.49.0
+
+# Optional baseline for translation eval (free 500k chars/mo)
+deepl==1.20.0

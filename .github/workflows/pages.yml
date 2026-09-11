@@ -1,0 +1,74 @@
+name: Deploy frontend to GitHub Pages
+
+# The static export is built in CI, so nothing npm-related ever runs on a dev
+# machine — same rule as docs/security.md, enforced by --ignore-scripts here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install (no lifecycle scripts)
+        working-directory: frontend
+        run: pnpm install --ignore-scripts
+
+      - name: Typecheck
+        working-directory: frontend
+        run: pnpm typecheck
+
+      - name: Build static export
+        working-directory: frontend
+        env:
+          # Set these under Settings -> Secrets and variables -> Actions -> Variables.
+          # API_URL is the Render URL, e.g. https://beyonder-api.onrender.com
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_BASE_PATH: ${{ vars.NEXT_PUBLIC_BASE_PATH }}
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          if [ -z "$NEXT_PUBLIC_API_URL" ]; then
+            echo "::error::Set the NEXT_PUBLIC_API_URL Actions variable to your deployed API URL."
+            exit 1
+          fi
+          pnpm build
+          touch out/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

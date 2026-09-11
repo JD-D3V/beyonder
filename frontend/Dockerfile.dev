@@ -1,0 +1,30 @@
+# Beyonder frontend — dev container.
+# Goal: never run npm/pnpm/node on the host. All install/build happens here.
+
+FROM node:22.13-alpine AS base
+WORKDIR /app
+
+# Install pnpm via corepack — pinned via package.json's "engines.pnpm".
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# Copy lockfile + package.json first so layer caches across code changes.
+COPY package.json pnpm-lock.yaml* .npmrc ./
+
+# Install with scripts disabled. If pnpm-lock.yaml is missing on first run
+# (fresh clone), this generates one inside the container without ever touching
+# the host filesystem.
+RUN if [ -f pnpm-lock.yaml ]; then \
+      pnpm install --frozen-lockfile --ignore-scripts ; \
+    else \
+      pnpm install --ignore-scripts ; \
+    fi
+
+# Copy source after install so deps cache survives code edits.
+COPY . .
+
+EXPOSE 3000
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=development
+
+# Run dev server. Bind to 0.0.0.0 so the port mapping reaches it.
+CMD ["pnpm", "dev"]

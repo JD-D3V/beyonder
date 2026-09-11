@@ -1,0 +1,54 @@
+# Render blueprint — free-tier API for Beyonder.
+#
+# Render hosts the FastAPI container only. Postgres lives on Supabase and the
+# vectors on Qdrant Cloud, both free, because Render's own free Postgres
+# expires after 30 days.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo.
+# Values marked `sync: false` are typed into the dashboard once and never
+# committed.
+#
+# Free instances sleep after 15 minutes idle and take ~50s to wake. The first
+# request after a sleep will be slow; that is the price of zero.
+
+services:
+  - type: web
+    name: beyonder-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- secrets: set these in the Render dashboard ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL          # Supabase session-pooler URI (IPv4)
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      # --- origins allowed to call the API: your Pages URL ---
+      - key: CORS_ORIGINS
+        sync: false
+
+      # --- safe defaults, versioned ---
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_EMBED_MODEL
+        value: text-embedding-004
+      - key: GEMINI_RPM_LIMIT
+        value: "15"
+      - key: GEMINI_CONCURRENCY
+        value: "3"
+      - key: QDRANT_COLLECTION
+        value: beyonder_chunks
+      - key: SCRAPER_BACKEND
+        value: http
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PYTHONUNBUFFERED
+        value: "1"

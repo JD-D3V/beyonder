@@ -1,0 +1,46 @@
+# Beyonder backend — Python 3.11
+# All deps pinned. Audit before bumping.
+
+# Web
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-multipart==0.0.20
+
+# LLM + embeddings
+google-generativeai==0.8.3
+
+# LangGraph + LangChain core (orchestration only, no heavy chains)
+langgraph==0.2.55
+langchain-core==0.3.21
+
+# Vector DB
+qdrant-client==1.12.1
+
+# Postgres + pgvector
+psycopg[binary,pool]==3.2.3
+pgvector==0.3.6
+sqlalchemy==2.0.36
+alembic==1.14.0
+
+# Ingestion
+beautifulsoup4==4.12.3
+lxml==5.3.0
+ebooklib==0.18
+langdetect==1.0.9
+chardet==5.2.0
+
+# Tokenization + chunking
+tiktoken==0.8.0
+
+# Utility
+httpx==0.28.1
+tenacity==9.0.0
+orjson==3.10.12
+python-dotenv==1.0.1
+structlog==24.4.0
+rich==13.9.4
+
+# Dev, test and eval extras live in requirements-dev.txt so the deployed image
+# stays small: no browser, no test runner.

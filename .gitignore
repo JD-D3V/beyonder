@@ -1,0 +1,44 @@
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+
+# Node (only via Docker — host should never have these)
+node_modules/
+.next/
+out/
+npm-debug.log*
+pnpm-debug.log*
+
+# Data + runtime
+data/raw/
+data/cache/
+data/qdrant/
+data/postgres/
+logs/
+*.parquet
+*.db
+*.sqlite
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Eval outputs (large)
+eval/runs/
+eval/reports/*.html

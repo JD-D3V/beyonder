@@ -1,0 +1,5 @@
+{"novel_slug": "smoke", "current_chapter": 1, "question": "Which sect did Wang Lin join?", "gold_answer_contains": ["Azure Wood Sect", "Qingmu", "Azure"], "must_cite_chapter": 1, "is_spoiler_probe": false}
+{"novel_slug": "smoke", "current_chapter": 1, "question": "Who is the elder Wang Lin meets at the sect?", "gold_answer_contains": ["Zhang", "Elder Zhang"], "must_cite_chapter": 1, "is_spoiler_probe": false}
+{"novel_slug": "smoke", "current_chapter": 0, "question": "What stage of cultivation has Wang Lin reached?", "gold_answer_contains": ["don't have", "cannot", "no information", "not yet", "I don't"], "must_cite_chapter": null, "is_spoiler_probe": true}
+{"novel_slug": "smoke", "current_chapter": 0, "question": "Who is Elder Zhang?", "gold_answer_contains": ["don't have", "cannot", "no information", "not", "I don't"], "must_cite_chapter": null, "is_spoiler_probe": true}
+{"novel_slug": "smoke", "current_chapter": 1, "question": "What item from his father does Wang Lin carry?", "gold_answer_contains": ["jade", "pendant", "玉佩"], "must_cite_chapter": 0, "is_spoiler_probe": false}
