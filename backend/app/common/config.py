@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
-    gemini_embed_model: str = "text-embedding-004"
+    gemini_embed_model: str = "gemini-embedding-001"
     gemini_rpm_limit: int = 15
     gemini_concurrency: int = 3
 
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     default_current_chapter: int = 0
 
     # Embedding config
-    embedding_dim: int = 768  # text-embedding-004
+    embedding_dim: int = 768  # gemini-embedding-001, requested via output_dimensionality
     chunk_target_tokens: int = 500
     chunk_overlap_tokens: int = 50
 

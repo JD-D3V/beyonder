@@ -38,12 +38,21 @@ class GeminiClient:
         api_key: str,
         model: str,
         embed_model: str,
+        embed_dim: int,
     ) -> None:
         if not api_key:
             raise GeminiError("GEMINI_API_KEY missing")
         genai.configure(api_key=api_key)
         self.model_name = model
-        self.embed_model = embed_model
+        # The embed endpoint needs the canonical "models/" prefix for models the
+        # client library doesn't ship in its base-model list (e.g. the newer
+        # gemini-embedding-001); older ones like text-embedding-004 also accept it.
+        self.embed_model = (
+            embed_model
+            if embed_model.startswith(("models/", "tunedModels/"))
+            else f"models/{embed_model}"
+        )
+        self.embed_dim = embed_dim
         self._gen_model = genai.GenerativeModel(model)
 
     # --- generation ----------------------------------------------------
@@ -130,6 +139,7 @@ class GeminiClient:
                     model=self.embed_model,
                     content=text,
                     task_type=task_type,
+                    output_dimensionality=self.embed_dim,
                 )
                 return list(resp["embedding"])
             except Exception as e:
@@ -159,4 +169,5 @@ def get_gemini() -> GeminiClient:
         api_key=settings.gemini_api_key,
         model=settings.gemini_model,
         embed_model=settings.gemini_embed_model,
+        embed_dim=settings.embedding_dim,
     )

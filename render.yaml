@@ -39,7 +39,7 @@ services:
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: GEMINI_EMBED_MODEL
-        value: text-embedding-004
+        value: gemini-embedding-001
       - key: GEMINI_RPM_LIMIT
         value: "15"
       - key: GEMINI_CONCURRENCY
