@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
 from ..agents.qa import answer_question
+from ..common.config import settings
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
 from ..graph.orchestrator import run_translation_graph
@@ -67,7 +69,18 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    return {"ok": True}
+    """Liveness, plus enough to tell which build and config are actually live.
+
+    Render injects RENDER_GIT_COMMIT, so a stale deploy is visible from here
+    instead of guessing at the dashboard. No secrets: model names only.
+    """
+    commit = os.environ.get("RENDER_GIT_COMMIT", "")
+    return {
+        "ok": True,
+        "commit": commit[:7] if commit else "dev",
+        "model": settings.gemini_model,
+        "embed_model": settings.gemini_embed_model,
+    }
 
 
 @router.get("/novels", response_model=list[NovelOut])

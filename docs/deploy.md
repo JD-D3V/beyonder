@@ -57,6 +57,17 @@ revision; nothing in the deployed container migrates on boot.
 
 Note the service URL, e.g. `https://beyonder-api.onrender.com`.
 
+`GET /health` reports which build answered, so a stale deploy is obvious:
+
+```json
+{"ok": true, "commit": "abd2d80", "model": "gemini-2.5-flash", "embed_model": "gemini-embedding-001"}
+```
+
+If `commit` lags the repo, the service did not redeploy. If `embed_model`
+is not what render.yaml says, the dashboard holds an older value: blueprint
+edits do not overwrite env vars that already exist on the service. Fix it in
+the dashboard.
+
 **The free instance sleeps.** After 15 idle minutes the next request takes
 about 50 seconds to wake it. The frontend will look frozen on that first call.
 
