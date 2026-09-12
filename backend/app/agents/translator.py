@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..common.logging import get_logger
+from ..common.textsplit import split_chunks
 from ..embed.gemini import GeminiClient, get_gemini
 from .prompts import TRANSLATOR_SYSTEM, TRANSLATOR_USER_TEMPLATE, TRANSLATOR_VERSION
 
@@ -54,11 +55,16 @@ def _format_glossary(rows: Iterable[tuple[str, str]]) -> str:
     return "\n".join(f"- {s} -> {t}" for s, t in rows)
 
 
-_PARA_SPLIT = re.compile(r"\n\s*\n")
+# One model request per piece, against a 4096 token output cap. Chinese
+# expands when translated, so a piece of roughly this many characters leaves
+# comfortable headroom. Scraped chapters arrive as a single unbroken block, and
+# sending one of those whole returned nothing: the reply could not fit.
+_MAX_TRANSLATION_CHARS = 1200
 
 
 def split_paragraphs(text: str) -> list[str]:
-    return [p.strip() for p in _PARA_SPLIT.split(text) if p.strip()]
+    """Translation-sized pieces, never one unbroken chapter."""
+    return split_chunks(text, _MAX_TRANSLATION_CHARS)
 
 
 async def translate_paragraph(

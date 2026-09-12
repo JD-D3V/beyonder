@@ -56,6 +56,16 @@ class TranslateState:
 
 # --- nodes ---------------------------------------------------------------
 
+def _skip(state: TranslateState) -> dict[str, Any]:
+    """A node that has nothing to do still has to write something.
+
+    LangGraph rejects an empty update with "expected node X to update at least
+    one of ...", which surfaced as a failed translation rather than a skipped
+    step. Writing the error field back is a no-op that satisfies it.
+    """
+    return {"error": state.error}
+
+
 async def node_load(state: TranslateState) -> dict[str, Any]:
     """Pull chapter text + existing glossary from Postgres."""
     with get_session() as s:
@@ -78,7 +88,7 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
 
 async def node_extract(state: TranslateState) -> dict[str, Any]:
     if state.error or not state.chapter_text:
-        return {}
+        return _skip(state)
     new_terms = await extract_terms_from_chapter(
         novel_title=state.novel_title,
         source_lang=state.source_lang,
@@ -97,7 +107,7 @@ async def node_extract(state: TranslateState) -> dict[str, Any]:
 
 async def node_translate(state: TranslateState) -> dict[str, Any]:
     if state.error or not state.chapter_text:
-        return {}
+        return _skip(state)
     result = await translate_chapter(
         state.chapter_text,
         glossary=list(state.glossary),
@@ -119,7 +129,7 @@ async def node_translate(state: TranslateState) -> dict[str, Any]:
 
 async def node_critic(state: TranslateState) -> dict[str, Any]:
     if state.error or not state.translation:
-        return {}
+        return _skip(state)
     res = await critique_translation(
         source=state.chapter_text,
         candidate=state.translation,
@@ -138,7 +148,7 @@ async def node_critic(state: TranslateState) -> dict[str, Any]:
 
 async def node_relations(state: TranslateState) -> dict[str, Any]:
     if state.error or not state.chapter_text:
-        return {}
+        return _skip(state)
     entities = [s for s, _ in state.glossary]
     rels = await extract_relations_from_chapter(
         novel_title=state.novel_title,
@@ -151,7 +161,7 @@ async def node_relations(state: TranslateState) -> dict[str, Any]:
 
 async def node_persist(state: TranslateState) -> dict[str, Any]:
     if state.error:
-        return {}
+        return _skip(state)
     with get_session() as s:
         if state.new_terms:
             # Re-fetch fresh: assign embeddings via separate flow if needed
