@@ -52,7 +52,14 @@ def init_engine(url: str | None = None) -> Engine:
             future=True,
         )
         _SessionLocal = sessionmaker(
-            bind=_engine, autoflush=False, autocommit=False, future=True
+            bind=_engine,
+            autoflush=False,
+            autocommit=False,
+            future=True,
+            # Routes (e.g. /novels/embed) read ORM objects inside a session and
+            # use them after it closes; the default expire-on-commit would expire
+            # their columns and raise DetachedInstanceError on first access.
+            expire_on_commit=False,
         )
     return _engine
 
