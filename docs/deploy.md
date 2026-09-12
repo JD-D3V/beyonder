@@ -60,7 +60,7 @@ Note the service URL, e.g. `https://beyonder-api.onrender.com`.
 `GET /health` reports which build answered, so a stale deploy is obvious:
 
 ```json
-{"ok": true, "commit": "abd2d80", "model": "gemini-2.5-flash", "embed_model": "gemini-embedding-001"}
+{"ok": true, "commit": "abd2d80", "model": "gemini-3.6-flash", "embed_model": "gemini-embedding-001"}
 ```
 
 If `commit` lags the repo, the service did not redeploy. If `embed_model`
@@ -134,6 +134,16 @@ Without it, ingestion works but translation, embedding, and Q&A all fail.
   build their chapters in JavaScript come back empty there. Run locally with
   `SCRAPER_BACKEND=auto` and `playwright install chromium` for those, or
   upload the text directly.
+- **Models get retired.** Google has already retired both original defaults
+  (`text-embedding-004`, then `gemini-2.5-flash`) for newly issued keys, and
+  the failure is a 404 at call time, not at boot. If translation or Q&A starts
+  answering "couldn't reach the model", list what the key can actually use:
+
+  ```powershell
+  .\backend\.venv\Scripts\python.exe -c "import google.generativeai as g, os; g.configure(api_key=os.environ['GEMINI_API_KEY']); [print(m.name) for m in g.list_models()]"
+  ```
+
+  Then set `GEMINI_MODEL` / `GEMINI_EMBED_MODEL` in `.env` and on Render.
 - **Rate limits.** Gemini free tier is 15 requests/minute and 1500/day. The
   limiter in `app/common/rate_limit.py` respects `GEMINI_RPM_LIMIT`. A long
   novel will take hours, by design.

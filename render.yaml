@@ -37,7 +37,7 @@ services:
 
       # --- safe defaults, versioned ---
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.6-flash
       - key: GEMINI_EMBED_MODEL
         value: gemini-embedding-001
       - key: GEMINI_RPM_LIMIT
