@@ -13,6 +13,8 @@ POST   /novels/ingest/text
 POST   /novels/ingest/url
 POST   /novels/upload
 POST   /novels/embed
+POST   /translate/batch
+GET    /progress
 POST /translate
 POST /ask
 GET  /novels/{id}/glossary
@@ -51,6 +53,7 @@ from ..storage.repository import (
     get_chapters,
     get_novel,
     get_or_create_user,
+    get_user_chapter,
     get_terms_for_chapters,
     get_translation,
     insert_chapter,
@@ -75,7 +78,10 @@ from .schemas import (
     KgOut,
     NovelOut,
     NovelPatch,
+    ProgressOut,
     ProgressIn,
+    TranslateBatchIn,
+    TranslateBatchResult,
     TranslateIn,
     TranslateResult,
 )
@@ -422,6 +428,71 @@ async def translate(body: TranslateIn) -> TranslateResult:
     )
 
 
+@router.post("/translate/batch", response_model=TranslateBatchResult)
+async def translate_batch(body: TranslateBatchIn) -> TranslateBatchResult:
+    """Translate the next few untranslated chapters, in order.
+
+    Deliberately a bounded synchronous call rather than a background job. The
+    free instance sleeps when no request is in flight, so a detached job can be
+    suspended halfway with nobody watching, and in-memory job state would not
+    survive the restart. A small batch finishes inside one request, every
+    chapter is saved as it completes, and the caller decides whether to ask for
+    more. The free Gemini tier allows 15 requests a minute, so a batch of three
+    chapters is also about as much as the rate limiter will pass without
+    stalling.
+    """
+    with get_session() as s:
+        novel = get_novel(s, body.novel_id)
+        if novel is None:
+            raise HTTPException(404, "novel not found")
+        title = novel.title
+        src_lang = novel.source_lang
+        pending = [
+            r.idx
+            for r in chapter_rows(s, body.novel_id, target_lang=body.target_lang)
+            if not r.translated
+        ]
+
+    if not pending:
+        return TranslateBatchResult(translated=[], remaining=0, done=True)
+
+    batch = pending[: body.limit]
+    translated: list[int] = []
+    error: str | None = None
+
+    for idx in batch:
+        try:
+            state = await run_translation_graph(
+                novel_id=body.novel_id,
+                novel_title=title,
+                source_lang=src_lang,
+                target_lang=body.target_lang,
+                chapter_idx=idx,
+            )
+        except Exception as e:  # network, quota, model outage
+            error = f"chapter {idx + 1}: {e}"
+            break
+        if state.error:
+            error = f"chapter {idx + 1}: {state.error}"
+            break
+        translated.append(idx)
+
+    remaining = len(pending) - len(translated)
+    log.info(
+        "translate.batch",
+        novel_id=body.novel_id,
+        done=len(translated),
+        remaining=remaining,
+        error=error,
+    )
+    return TranslateBatchResult(
+        translated=translated,
+        remaining=remaining,
+        done=remaining == 0,
+        error=error,
+    )
+
+
 @router.post("/ask", response_model=AskOut)
 async def ask(body: AskIn) -> AskOut:
     with get_session() as s:
@@ -477,6 +548,18 @@ async def knowledge_graph(novel_id: int, up_to: int = 100000, target_lang: str =
         return KgOut(
             nodes=[KgNode(**n.__dict__) for n in nodes],
             edges=[KgEdge(**e.__dict__) for e in edges],
+        )
+
+
+@router.get("/progress", response_model=ProgressOut)
+async def get_progress(novel_id: int, handle: str = "demo") -> ProgressOut:
+    """Where this reader got to. Handles are per browser, not accounts."""
+    with get_session() as s:
+        user = get_or_create_user(s, handle)
+        return ProgressOut(
+            handle=handle,
+            novel_id=novel_id,
+            current_chapter=get_user_chapter(s, user, novel_id),
         )
 
 

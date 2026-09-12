@@ -151,3 +151,27 @@ class ProgressIn(BaseModel):
     handle: str = "demo"
     novel_id: int
     current_chapter: int
+
+class TranslateBatchIn(BaseModel):
+    """Translate the next few untranslated chapters.
+
+    Bounded on purpose. See the route for why there is no job queue.
+    """
+
+    novel_id: int
+    limit: int = Field(default=3, ge=1, le=10)
+    target_lang: str = "en"
+
+
+class TranslateBatchResult(BaseModel):
+    translated: list[int] = Field(default_factory=list)
+    remaining: int = 0
+    done: bool = False
+    # Set when the run stopped early. Chapters already finished are still saved.
+    error: Optional[str] = None
+
+
+class ProgressOut(BaseModel):
+    handle: str
+    novel_id: int
+    current_chapter: int

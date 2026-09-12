@@ -40,8 +40,14 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     log_level: str = "INFO"
 
+    # Shared secret required on every request except /health. Empty means the
+    # API is open, which is the right default for local development. The
+    # deployed site cannot embed this: it is typed into the browser once.
+    api_token: str = ""
+
     # Comma-separated list of browser origins allowed to call this API.
-    # "*" allows any origin (fine here: the API carries no cookies or auth).
+    # "*" allows any origin. The token, not the origin list, is what keeps
+    # other people out; CORS only governs which pages a browser lets talk here.
     cors_origins: str = "http://localhost:3000"
 
     # URL ingestion: "auto" uses a headless browser when one is installed and
@@ -64,6 +70,10 @@ class Settings(BaseSettings):
     eval_target_qa_accuracy: float = 0.85
     eval_target_term_consistency: float = 0.85
     eval_target_spoiler_leakage: float = 0.0
+
+    @property
+    def is_private(self) -> bool:
+        return bool(self.api_token)
 
     @property
     def has_gemini(self) -> bool:

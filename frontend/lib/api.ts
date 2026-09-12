@@ -1,13 +1,33 @@
+import {
+  announceUnauthorized,
+  getHandle,
+  getToken,
+  UnauthorizedError,
+} from "./auth";
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Attached to every request. Empty when the API is open, which is how local
+// development runs.
+export function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { "X-API-Token": token } : {};
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...authHeaders(),
       ...(init?.headers || {}),
     },
   });
+  if (res.status === 401) {
+    // Raise the unlock prompt wherever the call came from.
+    announceUnauthorized();
+    throw new UnauthorizedError();
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}: ${text}`);
@@ -94,6 +114,13 @@ export interface TranslateResult {
   critic_passes: number;
 }
 
+export interface TranslateBatchResult {
+  translated: number[];
+  remaining: number;
+  done: boolean;
+  error: string | null;
+}
+
 export interface IngestResult {
   novel_id: number;
   chapters_added: number;
@@ -167,8 +194,14 @@ export const api = {
     }
     const res = await fetch(`${API_BASE}/novels/upload`, {
       method: "POST",
+      // No content-type here: the browser sets it with the multipart boundary.
+      headers: authHeaders(),
       body: form,
     });
+    if (res.status === 401) {
+      announceUnauthorized();
+      throw new UnauthorizedError();
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`${res.status} ${res.statusText}: ${text}`);
@@ -187,6 +220,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  translateBatch: (body: {
+    novel_id: number;
+    limit?: number;
+    target_lang?: string;
+  }) =>
+    req<TranslateBatchResult>("/translate/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   ask: (body: {
     novel_id: number;
     question: string;
@@ -198,9 +240,13 @@ export const api = {
     req<GlossaryEntry[]>(`/novels/${novelId}/glossary?up_to=${upTo}`),
   kg: (novelId: number, upTo: number = 100000) =>
     req<KgOut>(`/novels/${novelId}/kg?up_to=${upTo}`),
-  setProgress: (body: { handle?: string; novel_id: number; current_chapter: number }) =>
+  setProgress: (body: { novel_id: number; current_chapter: number }) =>
     req<{ ok: boolean }>("/progress", {
       method: "POST",
-      body: JSON.stringify({ handle: body.handle ?? "demo", ...body }),
+      body: JSON.stringify({ ...body, handle: getHandle() }),
     }),
+  getProgress: (novelId: number) =>
+    req<{ handle: string; novel_id: number; current_chapter: number }>(
+      `/progress?novel_id=${novelId}&handle=${encodeURIComponent(getHandle())}`,
+    ),
 };

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
 import { api, ChapterRow, Novel } from "../../lib/api";
 
@@ -23,6 +23,12 @@ function BookInner() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [progressNote, setProgressNote] = useState<string | null>(null);
+  const [resumeAt, setResumeAt] = useState(0);
+  // A ref, not state: the loop below reads it between awaits and would
+  // otherwise close over the value from the render that started it.
+  const stopped = useRef(false);
 
   // Edit form
   const [title, setTitle] = useState("");
@@ -55,6 +61,14 @@ function BookInner() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!novelId) return;
+    api
+      .getProgress(novelId)
+      .then((p) => setResumeAt(p.current_chapter))
+      .catch(() => undefined);
+  }, [novelId]);
 
   async function saveEdits() {
     setBusy(true);
@@ -95,6 +109,75 @@ function BookInner() {
     }
   }
 
+  async function translateSome(limit: number) {
+    setRunning(true);
+    stopped.current = false;
+    setErr(null);
+    setProgressNote("Translating...");
+    try {
+      const res = await api.translateBatch({ novel_id: novelId, limit });
+      await load();
+      if (res.error) {
+        setErr(res.error);
+        setProgressNote(
+          `Stopped after ${res.translated.length}. ${res.remaining} chapter${
+            res.remaining === 1 ? "" : "s"
+          } left.`,
+        );
+      } else {
+        setProgressNote(
+          res.done
+            ? "Every chapter is translated."
+            : `${res.translated.length} done, ${res.remaining} to go.`,
+        );
+      }
+    } catch (e) {
+      setErr(String(e));
+      setProgressNote(null);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function translateAll() {
+    setRunning(true);
+    stopped.current = false;
+    setErr(null);
+    let done = 0;
+    try {
+      // Loop small batches rather than one long request: each batch is saved
+      // before the next starts, so stopping or losing the connection never
+      // throws away finished work.
+      for (;;) {
+        if (stopped.current) {
+          setProgressNote(`Stopped. ${done} translated in this run.`);
+          break;
+        }
+        const res = await api.translateBatch({ novel_id: novelId, limit: 3 });
+        done += res.translated.length;
+        await load();
+        if (res.error) {
+          setErr(res.error);
+          setProgressNote(`Stopped after ${done}. ${res.remaining} left.`);
+          break;
+        }
+        if (res.done) {
+          setProgressNote(`Finished. ${done} chapter${done === 1 ? "" : "s"} translated.`);
+          break;
+        }
+        setProgressNote(`${done} done, ${res.remaining} to go...`);
+        if (res.translated.length === 0) {
+          // Nothing moved and no error: stop rather than spin.
+          break;
+        }
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
   async function remove() {
     const ok = window.confirm(
       `Delete "${novel?.title}" and every chapter, translation and glossary term that came from it? This cannot be undone.`,
@@ -127,8 +210,7 @@ function BookInner() {
   const pct = novel.chapter_count
     ? Math.round((novel.translated_count / novel.chapter_count) * 100)
     : 0;
-  const nextUntranslated = chapters.find((c) => !c.translated);
-  const resumeAt = nextUntranslated ? nextUntranslated.idx : 0;
+  const untranslated = chapters.filter((c) => !c.translated).length;
 
   return (
     <>
@@ -245,9 +327,35 @@ function BookInner() {
                 <div className="row">
                   <Link href={`/reader?novel=${novel.id}&ch=${resumeAt}`}>
                     <button>
-                      {novel.translated_count > 0 ? "Continue reading" : "Start reading"}
+                      {resumeAt > 0
+                        ? `Continue from chapter ${resumeAt + 1}`
+                        : "Start reading"}
                     </button>
                   </Link>
+                  {untranslated > 0 && (
+                    <>
+                      <button onClick={() => translateSome(3)} disabled={running}>
+                        {running ? "Working..." : "Translate next 3"}
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={translateAll}
+                        disabled={running}
+                      >
+                        Translate all {untranslated}
+                      </button>
+                    </>
+                  )}
+                  {running && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        stopped.current = true;
+                      }}
+                    >
+                      Stop
+                    </button>
+                  )}
                   <button className="secondary" onClick={embedAll} disabled={busy}>
                     {busy ? "Working..." : "Index for search"}
                   </button>
@@ -269,6 +377,7 @@ function BookInner() {
 
       {err && <div className="error">{err}</div>}
       {note && <div className="notice">{note}</div>}
+      {progressNote && <div className="notice">{progressNote}</div>}
 
       <div className="panel">
         <div className="page-head" style={{ marginBottom: 10 }}>

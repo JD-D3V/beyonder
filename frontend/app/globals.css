@@ -333,3 +333,29 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; }
 .seg button.on { background: var(--panel-2); color: var(--fg); }
 .prose { white-space: pre-wrap; line-height: 1.85; font-size: 16px; }
 .prose.source { font-size: 17px; line-height: 2; }
+
+/* --- access gate -------------------------------------------------------- */
+
+.gate-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+.gate {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gate h2 { margin: 0; font-size: 18px; }
+.gate input { width: 100%; }
