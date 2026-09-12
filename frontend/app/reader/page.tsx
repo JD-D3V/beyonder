@@ -170,10 +170,10 @@ function ReaderInner() {
           <div className="panel">
             <h3>Quick links</h3>
             <p className="small">
-              <a href={`/glossary?novel=${novelId}&up_to=${currentChapter}`}>Glossary up to ch {currentChapter}</a>
+              <Link href={`/glossary?novel=${novelId}&up_to=${currentChapter}`}>Glossary up to ch {currentChapter}</Link>
             </p>
             <p className="small">
-              <a href={`/kg?novel=${novelId}&up_to=${currentChapter}`}>Knowledge graph up to ch {currentChapter}</a>
+              <Link href={`/kg?novel=${novelId}&up_to=${currentChapter}`}>Knowledge graph up to ch {currentChapter}</Link>
             </p>
           </div>
         </aside>

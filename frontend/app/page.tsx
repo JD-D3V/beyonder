@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, Novel } from "../lib/api";
 
@@ -136,7 +137,7 @@ export default function Home() {
                   <td>{n.source_lang}</td>
                   <td>{n.chapter_count}</td>
                   <td className="right">
-                    <a href={`/reader?novel=${n.id}`}>Open</a>
+                    <Link href={`/reader?novel=${n.id}`}>Open</Link>
                   </td>
                 </tr>
               ))}
