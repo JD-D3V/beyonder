@@ -1,150 +1,152 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import BookCover from "../components/BookCover";
 import { api, Novel } from "../lib/api";
 
-export default function Home() {
+type Sort = "recent" | "title" | "chapters" | "progress";
+
+function compactNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return String(n);
+}
+
+export default function LibraryPage() {
   const [novels, setNovels] = useState<Novel[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [urlInput, setUrlInput] = useState("");
-
-  async function refresh() {
-    setErr(null);
-    try {
-      const xs = await api.listNovels();
-      setNovels(xs);
-    } catch (e: unknown) {
-      setErr(String(e));
-    }
-  }
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<Sort>("recent");
+  const [status, setStatus] = useState("all");
 
   useEffect(() => {
-    refresh();
+    api
+      .listNovels()
+      .then(setNovels)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setLoading(false));
   }, []);
 
-  async function onIngestText() {
-    if (!title.trim() || !text.trim()) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await api.ingestText({ title, text });
-      await api.embed({ novel_id: r.novel_id });
-      setTitle("");
-      setText("");
-      await refresh();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onIngestUrl() {
-    if (!title.trim() || !urlInput.trim()) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const urls = urlInput
-        .split(/\s+/)
-        .map((u) => u.trim())
-        .filter(Boolean);
-      const r = await api.ingestUrl({ title, urls });
-      await api.embed({ novel_id: r.novel_id });
-      setTitle("");
-      setUrlInput("");
-      await refresh();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let out = novels.filter((n) => {
+      if (status !== "all" && n.status !== status) return false;
+      if (!q) return true;
+      return (
+        n.title.toLowerCase().includes(q) ||
+        (n.author || "").toLowerCase().includes(q) ||
+        n.tags.some((t) => t.includes(q))
+      );
+    });
+    out = [...out].sort((a, b) => {
+      if (sort === "title") return a.title.localeCompare(b.title);
+      if (sort === "chapters") return b.chapter_count - a.chapter_count;
+      if (sort === "progress") {
+        const pa = a.chapter_count ? a.translated_count / a.chapter_count : 0;
+        const pb = b.chapter_count ? b.translated_count / b.chapter_count : 0;
+        return pb - pa;
+      }
+      return (b.updated_at || "").localeCompare(a.updated_at || "");
+    });
+    return out;
+  }, [novels, query, sort, status]);
 
   return (
-    <div>
-      <h1>Novels</h1>
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Library</h1>
+          <div className="sub">
+            {loading
+              ? "Loading..."
+              : `${novels.length} book${novels.length === 1 ? "" : "s"}, ${compactNumber(
+                  novels.reduce((s, n) => s + n.char_count, 0),
+                )} characters of source text`}
+          </div>
+        </div>
+        <Link href="/import">
+          <button>Import a book</button>
+        </Link>
+      </div>
+
       {err && <div className="error">{err}</div>}
 
-      <div className="panel">
-        <h3>Ingest text</h3>
-        <div className="col">
+      {novels.length > 0 && (
+        <div className="toolbar">
           <input
+            className="grow"
             type="text"
-            placeholder="Novel title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Search title, author or tag"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
           />
-          <textarea
-            placeholder="Paste raw text — chapter headers like 第一章 or Chapter 1 will be detected."
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-          <div className="row">
-            <button disabled={busy} onClick={onIngestText}>
-              {busy ? "Working..." : "Ingest + embed"}
-            </button>
-          </div>
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="all">Any status</option>
+            <option value="ongoing">Ongoing</option>
+            <option value="completed">Completed</option>
+            <option value="hiatus">Hiatus</option>
+          </select>
+          <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+            <option value="recent">Recently updated</option>
+            <option value="title">Title</option>
+            <option value="chapters">Most chapters</option>
+            <option value="progress">Most translated</option>
+          </select>
         </div>
-      </div>
+      )}
 
-      <div className="panel">
-        <h3>Ingest from URL(s)</h3>
-        <div className="col">
-          <input
-            type="text"
-            placeholder="Novel title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <textarea
-            placeholder="One URL per line (each is a chapter page)"
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-          />
-          <div className="row">
-            <button disabled={busy} onClick={onIngestUrl}>
-              {busy ? "Working..." : "Scrape + embed"}
-            </button>
-            <span className="muted small">Personal use only — don't redistribute scraped novels.</span>
-          </div>
+      {!loading && novels.length === 0 && (
+        <div className="empty">
+          <h3>Nothing on the shelf yet</h3>
+          <p>
+            Import a .txt or .epub file, paste a chapter, or pull one from a URL.
+            Whatever you add is saved and stays here.
+          </p>
+          <Link href="/import">
+            <button>Import your first book</button>
+          </Link>
         </div>
-      </div>
+      )}
 
-      <div className="panel">
-        <h3>Your library</h3>
-        {novels.length === 0 ? (
-          <p className="muted">No novels yet. Ingest one above.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Lang</th>
-                <th>Chapters</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {novels.map((n) => (
-                <tr key={n.id}>
-                  <td>{n.id}</td>
-                  <td>{n.title}</td>
-                  <td>{n.source_lang}</td>
-                  <td>{n.chapter_count}</td>
-                  <td className="right">
-                    <Link href={`/reader?novel=${n.id}`}>Open</Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {!loading && novels.length > 0 && shown.length === 0 && (
+        <div className="empty">
+          <h3>No match</h3>
+          <p>Nothing here matches that search.</p>
+        </div>
+      )}
+
+      <div className="shelf">
+        {shown.map((n) => {
+          const pct = n.chapter_count
+            ? Math.round((n.translated_count / n.chapter_count) * 100)
+            : 0;
+          return (
+            <div className="book-card" key={n.id}>
+              <Link href={`/novel?id=${n.id}`}>
+                <BookCover title={n.title} id={n.id} />
+                <div className="body">
+                  <div className="title">{n.title}</div>
+                  <div className="author">{n.author || "Unknown author"}</div>
+                  <div className="pill-row">
+                    <span className={`pill status-${n.status}`}>{n.status}</span>
+                    <span className="pill">{n.chapter_count} ch</span>
+                    <span className="pill">{n.source_lang}</span>
+                  </div>
+                  <div className="meter" aria-hidden="true">
+                    <span style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="meter-label">
+                    <span>{pct}% translated</span>
+                    <span>{compactNumber(n.char_count)} chars</span>
+                  </div>
+                </div>
+              </Link>
+            </div>
+          );
+        })}
       </div>
-    </div>
+    </>
   );
 }

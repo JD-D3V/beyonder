@@ -5,9 +5,10 @@ Functions here take an open Session — they never open or commit their own.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
 from .models import Chapter, Novel, Relation, Term, Translation, User
@@ -246,3 +247,134 @@ def set_user_chapter(
         prog = {}
     prog[str(novel_id)] = int(chapter_idx)
     user.progress_json = json.dumps(prog)
+
+
+# --- Library views --------------------------------------------------------
+
+@dataclass(frozen=True)
+class LibraryRow:
+    """A novel plus the counts the shelf shows, gathered in one query."""
+
+    novel: Novel
+    chapter_count: int
+    char_count: int
+    translated_count: int
+
+
+def library_rows(session: Session) -> list[LibraryRow]:
+    """Every novel with its chapter, character and translated-chapter counts.
+
+    Aggregated in SQL: a shelf of 200 books should still be one round trip.
+    """
+    chap = (
+        select(
+            Chapter.novel_id.label("novel_id"),
+            func.count(Chapter.id).label("chapters"),
+            func.coalesce(func.sum(Chapter.char_count), 0).label("chars"),
+        )
+        .group_by(Chapter.novel_id)
+        .subquery()
+    )
+    trans = (
+        select(
+            Chapter.novel_id.label("novel_id"),
+            func.count(func.distinct(Translation.chapter_id)).label("translated"),
+        )
+        .join(Translation, Translation.chapter_id == Chapter.id)
+        .group_by(Chapter.novel_id)
+        .subquery()
+    )
+    stmt = (
+        select(
+            Novel,
+            func.coalesce(chap.c.chapters, 0),
+            func.coalesce(chap.c.chars, 0),
+            func.coalesce(trans.c.translated, 0),
+        )
+        .outerjoin(chap, chap.c.novel_id == Novel.id)
+        .outerjoin(trans, trans.c.novel_id == Novel.id)
+        .order_by(Novel.updated_at.desc(), Novel.id.desc())
+    )
+    return [
+        LibraryRow(novel=n, chapter_count=c, char_count=ch, translated_count=t)
+        for n, c, ch, t in session.execute(stmt).all()
+    ]
+
+
+@dataclass(frozen=True)
+class ChapterRow:
+    idx: int
+    title: str | None
+    char_count: int
+    translated: bool
+
+
+def chapter_rows(
+    session: Session, novel_id: int, *, target_lang: str = "en"
+) -> list[ChapterRow]:
+    """Chapter list for a book page, each flagged with whether it is translated."""
+    stmt = (
+        select(
+            Chapter.idx,
+            Chapter.title,
+            Chapter.char_count,
+            Translation.id,
+        )
+        .outerjoin(
+            Translation,
+            (Translation.chapter_id == Chapter.id)
+            & (Translation.target_lang == target_lang),
+        )
+        .where(Chapter.novel_id == novel_id)
+        .order_by(Chapter.idx)
+    )
+    return [
+        ChapterRow(idx=i, title=t, char_count=c, translated=tr is not None)
+        for i, t, c, tr in session.execute(stmt).all()
+    ]
+
+
+def get_translation(
+    session: Session, *, chapter_id: int, target_lang: str = "en"
+) -> Translation | None:
+    return session.execute(
+        select(Translation).where(
+            Translation.chapter_id == chapter_id,
+            Translation.target_lang == target_lang,
+        )
+    ).scalar_one_or_none()
+
+
+def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
+    """Set only the fields given. Unknown keys are ignored, not an error."""
+    novel = session.get(Novel, novel_id)
+    if novel is None:
+        return None
+    allowed = {"title", "author", "description", "tags", "status", "source_lang"}
+    for key, value in fields.items():
+        if key in allowed and value is not None:
+            setattr(novel, key, value)
+    session.flush()
+    return novel
+
+
+def delete_novel(session: Session, novel_id: int) -> bool:
+    """Delete a novel and everything hanging off it.
+
+    Chapters, translations, terms and relations cascade in the schema. Reading
+    progress is a JSON blob on the user, so prune it here.
+    """
+    novel = session.get(Novel, novel_id)
+    if novel is None:
+        return False
+    session.delete(novel)
+    for user in session.execute(select(User)).scalars().all():
+        try:
+            progress = json.loads(user.progress_json or "{}")
+        except ValueError:
+            continue
+        if str(novel_id) in progress:
+            progress.pop(str(novel_id))
+            user.progress_json = json.dumps(progress)
+    session.flush()
+    return True

@@ -2,7 +2,8 @@
 
 Schema design notes
 -------------------
-- ``novels`` is the unit users add. Raw text lives in Postgres for v1 (small per
+- ``novels`` is the unit users add. Library metadata (author, tags, status,
+  description) lives here so the shelf view is one query. Raw text lives in Postgres for v1 (small per
   novel). If we outgrow it, move raw text to object storage and keep only
   metadata here.
 - ``chapters`` keeps the canonical chapter order and the *source* text.
@@ -44,10 +45,18 @@ class Novel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(512))
+    author: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Comma-separated and lowercased. See the 0002 migration for why not a join.
+    tags: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="ongoing")
     source_lang: Mapped[str] = mapped_column(String(8), default="zh")
     source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     chapters: Mapped[list["Chapter"]] = relationship(
