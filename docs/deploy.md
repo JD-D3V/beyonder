@@ -53,6 +53,20 @@ revision; nothing in the deployed container migrates on boot.
    `CORS_ORIGINS`.
 3. `CORS_ORIGINS` is your Pages origin with no trailing slash and no path,
    for example `https://jd-d3v.github.io`. Comma-separate to add more.
+4. `API_TOKEN` is the shared secret that keeps the library private. Generate
+   one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   Leave it unset and the API is open to anyone who finds the URL, which on a
+   public site means anyone: the API address is compiled into the page.
+
+   The token is never built into the frontend, because a static site cannot
+   hold a secret. The first time a browser hits the API it gets a 401 and the
+   site asks for the token, then keeps it in that browser's local storage. Each
+   device unlocks once. To revoke access, change the value here and every
+   browser is locked out at its next request.
+
+   `/health` stays open so the platform healthcheck keeps working, and CORS
+   preflights are never challenged, because a browser sends those before it is
+   allowed to attach the header.
 4. Deploy. Health is `GET /health`; interactive docs are at `/docs`.
 
 Note the service URL, e.g. `https://beyonder-api.onrender.com`.
@@ -144,6 +158,13 @@ Without it, ingestion works but translation, embedding, and Q&A all fail.
   ```
 
   Then set `GEMINI_MODEL` / `GEMINI_EMBED_MODEL` in `.env` and on Render.
+- **Translating a long book.** Use "translate all" on the book page. It runs
+  small batches and saves each chapter as it lands, so stopping, closing the
+  tab or losing the connection never discards finished work; reopening and
+  pressing it again picks up from the first untranslated chapter. It is not
+  fast: each chapter costs four model calls (extract, translate, critic,
+  relations) and the rate limiter spaces them, so budget roughly a minute per
+  chapter on the free tier.
 - **Rate limits.** Gemini free tier is 15 requests/minute and 1500/day. The
   limiter in `app/common/rate_limit.py` respects `GEMINI_RPM_LIMIT`. A long
   novel will take hours, by design.

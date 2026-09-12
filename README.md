@@ -66,6 +66,10 @@ Four free services, no credit card: Render for the API, Supabase for Postgres,
 Qdrant Cloud for vectors, GitHub Pages for the static frontend. Step by step in
 [docs/deploy.md](docs/deploy.md).
 
+Set `API_TOKEN` on the deployed API or the library is open to anyone who finds
+the URL. The site asks for the token once per browser and keeps it there; it is
+never compiled into the page.
+
 ## Features
 
 - **Ingestion**: URL scrape (Playwright), .txt/.epub upload, auto chapter split, language detect.
