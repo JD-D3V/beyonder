@@ -14,6 +14,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # Dashboard/paste-sourced values (API keys, URLs) often carry a stray
+        # trailing newline; an unstripped key breaks Gemini's gRPC call with
+        # "Illegal metadata". Strip whitespace from every string setting.
+        str_strip_whitespace=True,
     )
 
     # Gemini
