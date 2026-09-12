@@ -52,28 +52,56 @@ def _part_title(title: str | None, part: int) -> str | None:
     return title if part == 0 else f"{title} ({part + 1})"
 
 
+def _units(text: str) -> list[str]:
+    """Break text into the smallest pieces that are still safe to keep whole.
+
+    Scraped pages rarely have blank lines between paragraphs: the extractor
+    joins blocks with single newlines, so splitting on blank lines alone can
+    leave the entire book as one indivisible unit. Fall through progressively
+    finer boundaries, and only slice mid-sentence when there is nothing else.
+    """
+    units = [u for u in text.split(_PARA_BREAK) if u.strip()]
+
+    for separator in ("\n", None):
+        if all(len(u) <= _FALLBACK_CHARS for u in units):
+            return units
+        finer: list[str] = []
+        for unit in units:
+            if len(unit) <= _FALLBACK_CHARS:
+                finer.append(unit)
+            elif separator is not None:
+                finer.extend(p for p in unit.split(separator) if p.strip())
+            else:
+                # Sentence ends, Chinese and Latin. Kept on the left so a piece
+                # never starts with stray punctuation.
+                finer.extend(
+                    p for p in re.split(r"(?<=[。！？!?])\s*", unit) if p.strip()
+                )
+        units = finer
+
+    # Nothing left to break on: one unbroken run of characters.
+    out: list[str] = []
+    for unit in units:
+        if len(unit) <= _FALLBACK_CHARS:
+            out.append(unit)
+        else:
+            out.extend(
+                unit[i : i + _FALLBACK_CHARS]
+                for i in range(0, len(unit), _FALLBACK_CHARS)
+            )
+    return out
+
+
 def _split_by_length(text: str, title: str | None = None) -> list[ParsedChapter]:
-    """Break text on paragraph boundaries into roughly chapter-sized pieces."""
+    """Gather text into roughly chapter-sized pieces on safe boundaries."""
     out: list[ParsedChapter] = []
     buf: list[str] = []
     chars = 0
-    for para in text.split(_PARA_BREAK):
-        para = para.strip()
-        if not para:
-            continue
-        buf.append(para)
-        chars += len(para)
-        if chars >= _FALLBACK_CHARS:
-            out.append(
-                ParsedChapter(
-                    idx=len(out),
-                    title=_part_title(title, len(out)),
-                    text=_PARA_BREAK.join(buf),
-                )
-            )
-            buf = []
-            chars = 0
-    if buf:
+
+    def flush() -> None:
+        nonlocal buf, chars
+        if not buf:
+            return
         out.append(
             ParsedChapter(
                 idx=len(out),
@@ -81,6 +109,15 @@ def _split_by_length(text: str, title: str | None = None) -> list[ParsedChapter]
                 text=_PARA_BREAK.join(buf),
             )
         )
+        buf = []
+        chars = 0
+
+    for unit in _units(text):
+        buf.append(unit.strip())
+        chars += len(unit)
+        if chars >= _FALLBACK_CHARS:
+            flush()
+    flush()
     return out
 
 

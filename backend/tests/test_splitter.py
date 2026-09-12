@@ -50,3 +50,19 @@ def test_normal_chapters_are_not_resplit():
     assert len(parts) == 2
     assert parts[0].title == "第一章 山門"
     assert parts[1].title == "第二章 試劍"
+
+
+def test_scraped_text_without_blank_lines_still_splits():
+    # Page extractors join blocks with single newlines, so a scraped book can
+    # contain no blank lines at all. Splitting only on blank lines left the
+    # whole thing as one indivisible unit.
+    body = "\n".join("段落文字。" * 40 for _ in range(180))
+    parts = split_chapters("第01卷\n" + body)
+    assert len(parts) > 1
+    assert max(len(p.text) for p in parts) < 8000
+
+
+def test_text_with_no_breaks_at_all_still_splits():
+    parts = split_chapters("字" * 30000)
+    assert len(parts) > 1
+    assert max(len(p.text) for p in parts) <= 6000
