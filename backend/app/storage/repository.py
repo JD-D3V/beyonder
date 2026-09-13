@@ -80,7 +80,14 @@ def upsert_translation(
     text: str,
     model: str,
     critic_passes: int,
+    pieces_done: int | None = None,
 ) -> Translation:
+    """Insert or replace the translation for (chapter, lang).
+
+    ``pieces_done`` is the resumable-progress marker: leave it None to mark the
+    row complete (single-pass results and finished step runs), or pass the count
+    of pieces done so far to store a partial the next step call resumes from.
+    """
     existing = session.execute(
         select(Translation).where(
             Translation.chapter_id == chapter_id,
@@ -91,6 +98,7 @@ def upsert_translation(
         existing.text = text
         existing.model = model
         existing.critic_passes = critic_passes
+        existing.pieces_done = pieces_done
         return existing
     tr = Translation(
         chapter_id=chapter_id,
@@ -98,6 +106,7 @@ def upsert_translation(
         text=text,
         model=model,
         critic_passes=critic_passes,
+        pieces_done=pieces_done,
     )
     session.add(tr)
     session.flush()
@@ -281,6 +290,9 @@ def library_rows(session: Session) -> list[LibraryRow]:
             func.count(func.distinct(Translation.chapter_id)).label("translated"),
         )
         .join(Translation, Translation.chapter_id == Chapter.id)
+        # Only fully-translated chapters count; a resumable partial has a row
+        # with pieces_done set and is not done yet.
+        .where(Translation.pieces_done.is_(None))
         .group_by(Chapter.novel_id)
         .subquery()
     )
@@ -306,19 +318,23 @@ class ChapterRow:
     idx: int
     title: str | None
     char_count: int
-    translated: bool
+    translated: bool  # complete only
+    # Set when a resumable translation is mid-flight (pieces done so far); None
+    # when the chapter is untranslated or fully complete.
+    pieces_done: int | None = None
 
 
 def chapter_rows(
     session: Session, novel_id: int, *, target_lang: str = "en"
 ) -> list[ChapterRow]:
-    """Chapter list for a book page, each flagged with whether it is translated."""
+    """Chapter list for a book page, each flagged translated / partial / none."""
     stmt = (
         select(
             Chapter.idx,
             Chapter.title,
             Chapter.char_count,
             Translation.id,
+            Translation.pieces_done,
         )
         .outerjoin(
             Translation,
@@ -328,10 +344,19 @@ def chapter_rows(
         .where(Chapter.novel_id == novel_id)
         .order_by(Chapter.idx)
     )
-    return [
-        ChapterRow(idx=i, title=t, char_count=c, translated=tr is not None)
-        for i, t, c, tr in session.execute(stmt).all()
-    ]
+    rows: list[ChapterRow] = []
+    for i, t, c, tr_id, pieces in session.execute(stmt).all():
+        has_row = tr_id is not None
+        rows.append(
+            ChapterRow(
+                idx=i,
+                title=t,
+                char_count=c,
+                translated=has_row and pieces is None,
+                pieces_done=pieces if has_row else None,
+            )
+        )
+    return rows
 
 
 def get_translation(

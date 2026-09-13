@@ -104,6 +104,12 @@ class Translation(Base):
     text: Mapped[str] = mapped_column(Text)
     model: Mapped[str] = mapped_column(String(64))
     critic_passes: Mapped[int] = mapped_column(Integer, default=0)
+    # Resumable translation progress. NULL means complete: both legacy rows and
+    # single-pass (/translate) results, and any /translate/step run once its
+    # last piece lands. A non-null value is the count of pieces translated so
+    # far, and ``text`` holds the assembled prefix — a partial the next
+    # /translate/step call resumes from.
+    pieces_done: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

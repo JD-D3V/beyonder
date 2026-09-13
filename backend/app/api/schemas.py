@@ -39,7 +39,9 @@ class ChapterOut(BaseModel):
     idx: int
     title: Optional[str] = None
     char_count: int = 0
-    translated: bool = False
+    translated: bool = False  # complete only
+    # Set while a resumable translation is mid-flight (pieces done so far).
+    pieces_done: Optional[int] = None
 
 
 class ChapterDetail(BaseModel):
@@ -52,6 +54,10 @@ class ChapterDetail(BaseModel):
     translation: Optional[str] = None
     translated_with: Optional[str] = None
     critic_passes: Optional[int] = None
+    # A full translation exists. False when untranslated, or when a resumable
+    # run is partway (``translation`` then holds the prefix done so far).
+    complete: bool = False
+    pieces_done: Optional[int] = None
 
 
 class IngestTextIn(BaseModel):
@@ -97,6 +103,24 @@ class TranslateResult(BaseModel):
     translation: str
     new_terms: int
     critic_passes: int
+
+
+class TranslateStepIn(BaseModel):
+    """One resumable pass over a chapter. Call repeatedly until ``complete``."""
+
+    novel_id: int
+    chapter_idx: int
+    target_lang: str = "en"
+
+
+class TranslateStepResult(BaseModel):
+    chapter_idx: int
+    pieces_done: int
+    pieces_total: int
+    complete: bool
+    # A piece came back empty this call (transient rate-limit / model outage).
+    # No progress and nothing corrupted — pause and call again.
+    stalled: bool = False
 
 
 class AskIn(BaseModel):

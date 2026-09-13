@@ -37,6 +37,7 @@ from ..common.config import settings
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
 from ..graph.orchestrator import run_translation_graph
+from ..graph.resumable import translate_step
 from ..ingest.epub_loader import load_epub
 from ..ingest.lang import detect_lang
 from ..ingest.scraper import scrape_many
@@ -84,6 +85,8 @@ from .schemas import (
     TranslateBatchResult,
     TranslateIn,
     TranslateResult,
+    TranslateStepIn,
+    TranslateStepResult,
 )
 
 log = get_logger(__name__)
@@ -202,6 +205,7 @@ async def list_chapters_route(
                 title=r.title,
                 char_count=r.char_count,
                 translated=r.translated,
+                pieces_done=r.pieces_done,
             )
             for r in chapter_rows(s, novel_id, target_lang=target_lang)
         ]
@@ -225,6 +229,8 @@ async def get_chapter_route(
             translation=tr.text if tr else None,
             translated_with=tr.model if tr else None,
             critic_passes=tr.critic_passes if tr else None,
+            complete=tr is not None and tr.pieces_done is None,
+            pieces_done=tr.pieces_done if tr else None,
         )
 
 
@@ -490,6 +496,34 @@ async def translate_batch(body: TranslateBatchIn) -> TranslateBatchResult:
         remaining=remaining,
         done=remaining == 0,
         error=error,
+    )
+
+
+@router.post("/translate/step", response_model=TranslateStepResult)
+async def translate_step_route(body: TranslateStepIn) -> TranslateStepResult:
+    """Resumable translation for a long chapter.
+
+    Translates as many pieces as fit a short time budget, saving each one, then
+    reports progress. Call it repeatedly until ``complete`` is true. Unlike
+    /translate it skips the whole-chapter critic retry-loop — that is what lets
+    a chapter too big for one request finish over several short ones.
+    """
+    with get_session() as s:
+        if get_novel(s, body.novel_id) is None:
+            raise HTTPException(404, "novel not found")
+    res = await translate_step(
+        novel_id=body.novel_id,
+        chapter_idx=body.chapter_idx,
+        target_lang=body.target_lang,
+    )
+    if res.error:
+        raise HTTPException(400, res.error)
+    return TranslateStepResult(
+        chapter_idx=res.chapter_idx,
+        pieces_done=res.pieces_done,
+        pieces_total=res.pieces_total,
+        complete=res.complete,
+        stalled=res.stalled,
     )
 
 
