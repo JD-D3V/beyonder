@@ -7,6 +7,11 @@ import {
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// Chapters up to this many source characters use /translate (whole-chapter,
+// with the critic). Longer ones would blow a single request, so the UI drives
+// them through /translate/step: resumable, piece-by-piece, no critic.
+export const CRITIC_MAX_CHARS = 2500;
+
 // Attached to every request. Empty when the API is open, which is how local
 // development runs.
 export function authHeaders(): Record<string, string> {
@@ -54,7 +59,8 @@ export interface ChapterRow {
   idx: number;
   title: string | null;
   char_count: number;
-  translated: boolean;
+  translated: boolean; // complete only
+  pieces_done: number | null; // set while a resumable translation is mid-flight
 }
 
 export interface ChapterDetail {
@@ -65,6 +71,8 @@ export interface ChapterDetail {
   translation: string | null;
   translated_with: string | null;
   critic_passes: number | null;
+  complete: boolean; // a full translation exists
+  pieces_done: number | null;
 }
 
 export interface GlossaryEntry {
@@ -119,6 +127,16 @@ export interface TranslateBatchResult {
   remaining: number;
   done: boolean;
   error: string | null;
+}
+
+export interface TranslateStepResult {
+  chapter_idx: number;
+  pieces_done: number;
+  pieces_total: number;
+  complete: boolean;
+  // A piece came back empty this call (transient rate-limit / outage). No
+  // progress; pause and call again.
+  stalled: boolean;
 }
 
 export interface IngestResult {
@@ -226,6 +244,16 @@ export const api = {
     target_lang?: string;
   }) =>
     req<TranslateBatchResult>("/translate/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // One resumable pass over a long chapter. Call until `complete`.
+  translateStep: (body: {
+    novel_id: number;
+    chapter_idx: number;
+    target_lang?: string;
+  }) =>
+    req<TranslateStepResult>("/translate/step", {
       method: "POST",
       body: JSON.stringify(body),
     }),

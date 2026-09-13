@@ -3,9 +3,18 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { api, AskOut, ChapterDetail, ChapterRow, Novel } from "../../lib/api";
+import {
+  api,
+  AskOut,
+  ChapterDetail,
+  ChapterRow,
+  CRITIC_MAX_CHARS,
+  Novel,
+} from "../../lib/api";
 
 type View = "translation" | "source" | "both";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function ReaderInner() {
   const params = useSearchParams();
@@ -18,6 +27,7 @@ function ReaderInner() {
   const [chapter, setChapter] = useState<ChapterDetail | null>(null);
   const [view, setView] = useState<View>("translation");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const [question, setQuestion] = useState("");
@@ -57,10 +67,39 @@ function ReaderInner() {
   }, [novelId, chapterIdx]);
 
   async function translateThis() {
+    if (!chapter) return;
     setBusy(true);
     setErr(null);
+    setProgress(null);
     try {
-      await api.translate({ novel_id: novelId, chapter_idx: chapterIdx });
+      if (chapter.char_count <= CRITIC_MAX_CHARS) {
+        await api.translate({ novel_id: novelId, chapter_idx: chapterIdx });
+      } else {
+        // Long chapter: resumable, critic-free passes until complete.
+        let stalls = 0;
+        for (;;) {
+          const r = await api.translateStep({
+            novel_id: novelId,
+            chapter_idx: chapterIdx,
+          });
+          if (r.complete) break;
+          if (r.stalled) {
+            stalls += 1;
+            if (stalls > 8) {
+              throw new Error(
+                "Gemini kept returning nothing — likely the free daily quota. " +
+                  "Progress is saved; resume this later.",
+              );
+            }
+            setProgress("Rate-limited, waiting...");
+            await sleep(20000);
+          } else {
+            stalls = 0;
+            setProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
+            await sleep(4000); // pace under the 15 req/min free tier
+          }
+        }
+      }
       await loadChapter();
       setView("translation");
       api.listChapters(novelId).then(setChapters).catch(() => undefined);
@@ -68,6 +107,7 @@ function ReaderInner() {
       setErr(String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -173,9 +213,13 @@ function ReaderInner() {
               Both
             </button>
           </div>
-          {!chapter?.translation && (
+          {chapter && !chapter.complete && (
             <button onClick={translateThis} disabled={busy}>
-              {busy ? "Translating..." : "Translate this chapter"}
+              {busy
+                ? progress || "Translating..."
+                : chapter.pieces_done != null
+                  ? `Resume translation (${chapter.pieces_done} done)`
+                  : "Translate this chapter"}
             </button>
           )}
         </div>
@@ -209,13 +253,27 @@ function ReaderInner() {
 
           {chapter && chapter.translated_with && view !== "source" && (
             <p className="small muted" style={{ marginTop: 18 }}>
-              Translated with {chapter.translated_with}
-              {chapter.critic_passes
-                ? `, ${chapter.critic_passes} critic pass${
-                    chapter.critic_passes === 1 ? "" : "es"
-                  }`
-                : ""}
-              . Saved, so reopening it costs nothing.
+              {chapter.complete ? (
+                <>
+                  Translated with {chapter.translated_with}
+                  {chapter.critic_passes
+                    ? `, ${chapter.critic_passes} critic pass${
+                        chapter.critic_passes === 1 ? "" : "es"
+                      }`
+                    : ""}
+                  . Saved, so reopening it costs nothing.
+                </>
+              ) : (
+                <>
+                  Partial translation
+                  {chapter.pieces_done != null
+                    ? ` — ${chapter.pieces_done} piece${
+                        chapter.pieces_done === 1 ? "" : "s"
+                      } done`
+                    : ""}
+                  . Press “Resume translation” above to finish it.
+                </>
+              )}
             </p>
           )}
         </div>

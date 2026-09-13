@@ -4,13 +4,15 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
-import { api, ChapterRow, Novel } from "../../lib/api";
+import { api, ChapterRow, CRITIC_MAX_CHARS, Novel } from "../../lib/api";
 
 function compactNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
   return String(n);
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function BookInner() {
   const params = useSearchParams();
@@ -109,73 +111,82 @@ function BookInner() {
     }
   }
 
-  async function translateSome(limit: number) {
-    setRunning(true);
-    stopped.current = false;
-    setErr(null);
-    setProgressNote("Translating...");
-    try {
-      const res = await api.translateBatch({ novel_id: novelId, limit });
-      await load();
-      if (res.error) {
-        setErr(res.error);
-        setProgressNote(
-          `Stopped after ${res.translated.length}. ${res.remaining} chapter${
-            res.remaining === 1 ? "" : "s"
-          } left.`,
-        );
+  // Translate one chapter. Short chapters go through /translate (with the
+  // critic); long ones loop /translate/step until complete, so a chapter too
+  // big for one request finishes over several and never loses saved progress.
+  async function translateOneChapter(c: ChapterRow) {
+    if (c.char_count <= CRITIC_MAX_CHARS) {
+      await api.translate({ novel_id: novelId, chapter_idx: c.idx });
+      return;
+    }
+    setNote(
+      `Chapter ${c.idx + 1} is long (${compactNumber(
+        c.char_count,
+      )} characters) — translating in resumable passes. The critic re-translate pass is skipped for chapters this size.`,
+    );
+    let stalls = 0;
+    for (;;) {
+      if (stopped.current) return;
+      const r = await api.translateStep({ novel_id: novelId, chapter_idx: c.idx });
+      if (r.complete) return;
+      if (r.stalled) {
+        stalls += 1;
+        if (stalls > 8) {
+          throw new Error(
+            "Gemini kept returning nothing — likely the free daily quota. " +
+              "Progress is saved; resume this later.",
+          );
+        }
+        setProgressNote(`Chapter ${c.idx + 1}: rate-limited, waiting...`);
+        await sleep(20000);
       } else {
+        stalls = 0;
         setProgressNote(
-          res.done
-            ? "Every chapter is translated."
-            : `${res.translated.length} done, ${res.remaining} to go.`,
+          `Chapter ${c.idx + 1}: piece ${r.pieces_done}/${r.pieces_total}...`,
         );
+        await sleep(4000); // pace under the 15 req/min free tier
       }
-    } catch (e) {
-      setErr(String(e));
-      setProgressNote(null);
-    } finally {
-      setRunning(false);
     }
   }
 
-  async function translateAll() {
+  // Client-orchestrated so each chapter is routed by size and saved before the
+  // next starts. Stopping or a dropped connection never discards finished work.
+  async function runChapters(list: ChapterRow[]) {
     setRunning(true);
     stopped.current = false;
     setErr(null);
     let done = 0;
     try {
-      // Loop small batches rather than one long request: each batch is saved
-      // before the next starts, so stopping or losing the connection never
-      // throws away finished work.
-      for (;;) {
+      for (const c of list) {
         if (stopped.current) {
           setProgressNote(`Stopped. ${done} translated in this run.`);
           break;
         }
-        const res = await api.translateBatch({ novel_id: novelId, limit: 3 });
-        done += res.translated.length;
+        await translateOneChapter(c);
+        done += 1;
         await load();
-        if (res.error) {
-          setErr(res.error);
-          setProgressNote(`Stopped after ${done}. ${res.remaining} left.`);
-          break;
-        }
-        if (res.done) {
-          setProgressNote(`Finished. ${done} chapter${done === 1 ? "" : "s"} translated.`);
-          break;
-        }
-        setProgressNote(`${done} done, ${res.remaining} to go...`);
-        if (res.translated.length === 0) {
-          // Nothing moved and no error: stop rather than spin.
-          break;
-        }
+        setProgressNote(`${done} of ${list.length} translated...`);
+      }
+      if (!stopped.current) {
+        setProgressNote(
+          `Finished. ${done} chapter${done === 1 ? "" : "s"} translated.`,
+        );
       }
     } catch (e) {
       setErr(String(e));
+      setProgressNote(`Stopped after ${done}. Saved progress is kept.`);
     } finally {
       setRunning(false);
+      await load();
     }
+  }
+
+  function translateSome(limit: number) {
+    return runChapters(chapters.filter((c) => !c.translated).slice(0, limit));
+  }
+
+  function translateAll() {
+    return runChapters(chapters.filter((c) => !c.translated));
   }
 
   async function remove() {
@@ -404,7 +415,11 @@ function BookInner() {
               <span className="name">{c.title || `Chapter ${c.idx + 1}`}</span>
               <span className="flag">{compactNumber(c.char_count)}</span>
               <span className={`flag ${c.translated ? "done" : ""}`}>
-                {c.translated ? "translated" : "source only"}
+                {c.translated
+                  ? "translated"
+                  : c.pieces_done != null
+                    ? `in progress (${c.pieces_done} done)`
+                    : "source only"}
               </span>
             </Link>
           ))}
