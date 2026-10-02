@@ -5,7 +5,7 @@ from __future__ import annotations
 
 EXTRACTOR_VERSION = "extractor.v1"
 TRANSLATOR_VERSION = "translator.v1"
-CRITIC_VERSION = "critic.v1"
+CRITIC_VERSION = "critic.v2"
 QA_VERSION = "qa.v1"
 RELATION_VERSION = "relation.v1"
 
@@ -47,24 +47,22 @@ Source paragraph:
 Return JSON: {{"translation": "...", "new_terms": [{{"source_term": "...", "target_term": "...", "kind": "...", "confidence": 0.0}}]}}.
 new_terms must only contain proper nouns you encountered that were NOT in the glossary."""
 
-CRITIC_SYSTEM = """You are a translation editor. You check that a candidate translation respects a locked glossary.
+CRITIC_SYSTEM = """You are a translation QA reviewer for Chinese web novels. Flag only real problems; do not rewrite. Each flag has kind, source_span (source text), target_span (translation text), note (short reason). kind must be one of:
+- unknown_name: a proper noun rendered inconsistently or likely mistranslated.
+- pronoun: a he/she/they/it that is ambiguous or likely wrong (Chinese pronouns are often dropped).
+- idiom: a chengyu or idiom translated literally or lost."""
 
-A violation is: the glossary has source_term -> target_term, the source paragraph contains source_term, and the translation does NOT contain target_term (case-insensitive, allowing minor inflection)."""
-
-CRITIC_USER_TEMPLATE = """Glossary:
-{glossary_block}
-
-Source:
+CRITIC_USER_TEMPLATE = """Source:
 \"\"\"
 {source}
 \"\"\"
 
-Candidate translation:
+Translation:
 \"\"\"
 {candidate}
 \"\"\"
 
-Return JSON: {{"ok": true|false, "violations": [{{"source_term": "...", "expected": "...", "found": "..." }}], "suggested_fix": "full revised translation if not ok, else empty string"}}."""
+Return JSON: {{"flags": [{{"kind": "unknown_name|pronoun|idiom", "source_span": "...", "target_span": "...", "note": "..."}}]}}. Empty list if nothing."""
 
 QA_SYSTEM = """You answer questions about a Chinese web novel. You may ONLY use facts present in the provided context chunks. If the answer is not in the context, say so plainly — do not guess.
 

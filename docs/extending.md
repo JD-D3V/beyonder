@@ -56,7 +56,7 @@ security principle: ship hand-written code over a transitive-dep stack.
   inside the 15 RPM cap. Raise on a paid tier.
 - `chunk_target_tokens` / `chunk_overlap_tokens` (config): bigger chunks ->
   fewer Qdrant points but blurrier retrieval.
-- `critic_max_retries`: how many fix loops the critic does. Set to 0 to skip.
+- The critic no longer retries; it records review flags (see `review_flags`).
 
 ## Eval target promotion
 

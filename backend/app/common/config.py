@@ -63,9 +63,6 @@ class Settings(BaseSettings):
     chunk_target_tokens: int = 500
     chunk_overlap_tokens: int = 50
 
-    # Translator retry
-    critic_max_retries: int = 2
-
     # Eval
     eval_target_qa_accuracy: float = 0.85
     eval_target_term_consistency: float = 0.85

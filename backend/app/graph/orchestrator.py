@@ -1,11 +1,10 @@
 """LangGraph wiring for the translation pipeline.
 
 Nodes:
-    seed -> extract -> translate -> critic -> (retry translate) -> persist
+    seed -> extract -> translate -> critic -> relate -> persist
 
-Branching:
-    after critic, if violations and retries left, loop back to translate with
-    the critic's suggested_fix as a seed; otherwise persist.
+The critic is non-blocking: it fixes known glossary drift, records review
+flags, and never sends the chapter back for retranslation.
 """
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ from ..agents.critic import critique_translation
 from ..agents.extractor import extract_terms_from_chapter
 from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import translate_chapter
-from ..common.config import settings
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
 from ..llm.client import LLMClient
@@ -29,6 +27,8 @@ from ..storage.repository import (
     get_terms_for_chapters,
     insert_relations,
     insert_seed_terms,
+    load_variants,
+    replace_open_flags,
     term_dicts,
     upsert_terms,
     upsert_translation,
@@ -53,7 +53,8 @@ class TranslateState:
     relations: list[dict] = field(default_factory=list)
     translation: str = ""
     critic_passes: int = 0
-    retries_left: int = settings.critic_max_retries
+    flags: list[dict] = field(default_factory=list)
+    variants: dict[str, list[str]] = field(default_factory=dict)
     done: bool = False
     error: str | None = None
     # Set when a complete translation appeared meanwhile and we did not overwrite.
@@ -89,10 +90,12 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
             target_lang=state.target_lang,
         )
         gloss = [(t.source_term, t.target_term) for t in terms]
+        variants = load_variants(s, state.novel_id)
     return {
         "chapter_text": chap.source_text,
         "chapter_db_id": chap.id,
         "glossary": gloss,
+        "variants": variants,
     }
 
 
@@ -166,16 +169,14 @@ async def node_critic(state: TranslateState, config: RunnableConfig) -> dict[str
         source=state.chapter_text,
         candidate=state.translation,
         glossary=list(state.glossary),
+        variants=state.variants,
     )
-    out: dict[str, Any] = {"critic_passes": state.critic_passes + 1}
-    if res.ok or state.retries_left <= 0:
-        out["done"] = True
-    else:
-        if res.suggested_fix:
-            out["translation"] = res.suggested_fix
-        out["retries_left"] = state.retries_left - 1
-        out["done"] = False
-    return out
+    return {
+        "critic_passes": state.critic_passes + 1,
+        "translation": res.fixed_text or state.translation,
+        "flags": res.flags,
+        "done": True,
+    }
 
 
 async def node_relations(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
@@ -230,6 +231,10 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
                 translated_by=config["configurable"].get("translated_by"),
                 overwrite=bool(config["configurable"].get("overwrite", False)),
             )
+            if wrote:
+                replace_open_flags(
+                    s, state.novel_id, state.chapter_idx, state.flags
+                )
     log.info(
         "graph.persist",
         novel_id=state.novel_id,
@@ -247,10 +252,6 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
 
 # --- graph ---------------------------------------------------------------
 
-def _route_after_critic(state: TranslateState) -> str:
-    return "persist" if state.done else "translate"
-
-
 def build_translation_graph():
     g = StateGraph(TranslateState)
     g.add_node("load", node_load)
@@ -266,11 +267,7 @@ def build_translation_graph():
     g.add_edge("seed", "extract")
     g.add_edge("extract", "translate")
     g.add_edge("translate", "critic")
-    g.add_conditional_edges(
-        "critic",
-        _route_after_critic,
-        {"translate": "translate", "persist": "relate"},
-    )
+    g.add_edge("critic", "relate")
     g.add_edge("relate", "persist")
     g.add_edge("persist", END)
     return g.compile()

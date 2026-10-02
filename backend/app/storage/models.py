@@ -244,3 +244,28 @@ class LibraryEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ReviewFlag(Base):
+    """A non-blocking QA note on a translated chapter."""
+
+    __tablename__ = "review_flags"
+    __table_args__ = (
+        Index("ix_review_flags_novel_status_chapter", "novel_id", "status", "chapter_idx"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer)
+    # glossary_drift | unknown_name | pronoun | idiom | untranslated
+    kind: Mapped[str] = mapped_column(String(24))
+    source_span: Mapped[str] = mapped_column(Text, default="")
+    target_span: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="open", server_default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

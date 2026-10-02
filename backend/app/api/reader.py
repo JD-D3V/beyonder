@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..agents.qa import answer_question
-from ..auth.deps import current_user, current_user_optional
+from ..auth.deps import current_user, current_user_optional, require_admin
 from ..llm.resolve import resolve_llm
 from ..kg.graph import build_subgraph
 from ..storage.db import get_session
@@ -13,6 +13,8 @@ from ..storage.repository import (
     get_novel,
     get_progress,
     get_terms_for_chapters,
+    list_flags,
+    resolve_flag,
     set_progress,
 )
 from .schemas import (
@@ -25,6 +27,7 @@ from .schemas import (
     KgOut,
     ProgressIn,
     ProgressOut,
+    ReviewFlagOut,
 )
 
 router = APIRouter()
@@ -139,3 +142,26 @@ async def progress(body: ProgressIn, user: User = Depends(current_user)) -> dict
     with get_session() as s:
         set_progress(s, user.id, body.novel_id, body.current_chapter)
     return {"ok": True}
+
+
+def _flag_out(f) -> ReviewFlagOut:
+    return ReviewFlagOut(
+        id=f.id, novel_id=f.novel_id, chapter_idx=f.chapter_idx, kind=f.kind,
+        source_span=f.source_span, target_span=f.target_span, note=f.note,
+        status=f.status, created_at=f.created_at, resolved_by=f.resolved_by,
+    )
+
+
+@router.get("/novels/{novel_id}/flags", response_model=list[ReviewFlagOut])
+async def flags(novel_id: int, status: str | None = "open", chapter: int | None = None):
+    with get_session() as s:
+        return [_flag_out(f) for f in list_flags(s, novel_id, status, chapter)]
+
+
+@router.post("/flags/{flag_id}/resolve", response_model=ReviewFlagOut)
+async def resolve(flag_id: int, admin: User = Depends(require_admin)):
+    with get_session() as s:
+        f = resolve_flag(s, flag_id, admin.id)
+        if f is None:
+            raise HTTPException(404, "flag not found")
+        return _flag_out(f)

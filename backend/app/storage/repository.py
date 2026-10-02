@@ -12,7 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..common.config import settings
-from .models import Chapter, Novel, ReadingProgress, Relation, Term, Translation
+from .models import (
+    Chapter, Novel, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+)
 
 
 # --- Novels ---------------------------------------------------------------
@@ -542,3 +544,67 @@ def update_term(
         t.locked = locked
     session.flush()
     return t
+
+
+# --- Review flags ----------------------------------------------------------
+
+def replace_open_flags(
+    session: Session, novel_id: int, chapter_idx: int, flags: Iterable[dict]
+) -> None:
+    """Swap a chapter's open flags for a fresh set; resolved ones are kept."""
+    session.execute(
+        sa_delete(ReviewFlag).where(
+            ReviewFlag.novel_id == novel_id,
+            ReviewFlag.chapter_idx == chapter_idx,
+            ReviewFlag.status == "open",
+        )
+    )
+    for f in flags:
+        session.add(
+            ReviewFlag(
+                novel_id=novel_id,
+                chapter_idx=chapter_idx,
+                kind=f["kind"],
+                source_span=f.get("source_span", ""),
+                target_span=f.get("target_span", ""),
+                note=f.get("note", ""),
+            )
+        )
+    session.flush()
+
+
+def list_flags(
+    session: Session, novel_id: int, status: str | None, chapter: int | None
+) -> Sequence[ReviewFlag]:
+    q = select(ReviewFlag).where(ReviewFlag.novel_id == novel_id)
+    if status:
+        q = q.where(ReviewFlag.status == status)
+    if chapter is not None:
+        q = q.where(ReviewFlag.chapter_idx == chapter)
+    return session.execute(q.order_by(ReviewFlag.chapter_idx, ReviewFlag.id)).scalars().all()
+
+
+def resolve_flag(session: Session, flag_id: int, user_id: int) -> ReviewFlag | None:
+    f = session.get(ReviewFlag, flag_id)
+    if f is None:
+        return None
+    f.status = "resolved"
+    f.resolved_by = user_id
+    session.flush()
+    return f
+
+
+def load_variants(session: Session, novel_id: int) -> dict[str, list[str]]:
+    """{source_term: [wrong renderings]} from earlier glossary_drift flags."""
+    rows = session.execute(
+        select(ReviewFlag.source_span, ReviewFlag.target_span).where(
+            ReviewFlag.novel_id == novel_id,
+            ReviewFlag.kind == "glossary_drift",
+            ReviewFlag.target_span != "",
+        )
+    ).all()
+    out: dict[str, list[str]] = {}
+    for src, tgt in rows:
+        if tgt not in out.setdefault(src, []):
+            out[src].append(tgt)
+    return out

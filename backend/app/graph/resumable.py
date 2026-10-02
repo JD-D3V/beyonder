@@ -1,7 +1,7 @@
 """Resumable, time-boxed chapter translation.
 
 The single-pass graph (``run_translation_graph``) does extract -> translate ->
-critic-retry -> relations in one request. For a long chapter that is too much
+deterministic QA -> relations in one request. For a long chapter that is too much
 work for one HTTP request on a small instance: it times out and nothing is
 saved.
 
@@ -15,8 +15,8 @@ saved.
   * runs relations once when the final piece lands (best-effort — the
     translation is already saved by then).
 
-It intentionally skips the whole-chapter critic retry-loop: that step
-re-translates the entire chapter on a nitpick and cannot be resumed. Callers
+It never calls the LLM critic; on completion it runs only the deterministic
+checks (glossary drift fix, leftover CJK) and stores review flags. Callers
 route short chapters to ``/translate`` (with the critic) and long ones here.
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import split_paragraphs, translate_paragraph
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
+from ..review.checks import deterministic_flags
 from ..llm.client import LLMClient
 from ..storage.db import get_session
 from ..storage.repository import (
@@ -37,6 +38,8 @@ from ..storage.repository import (
     get_translation,
     insert_relations,
     insert_seed_terms,
+    load_variants,
+    replace_open_flags,
     term_dicts,
     upsert_terms,
     upsert_translation,
@@ -229,6 +232,22 @@ async def translate_step(
 
     complete = done == total
     if complete:
+        # Deterministic QA on the finished text. Best-effort, like relations.
+        try:
+            with get_session() as s:
+                variants = load_variants(s, novel_id)
+                fixed, qa_flags = deterministic_flags(source, acc, glossary, variants)
+                if fixed != acc:
+                    upsert_translation(
+                        s, chapter_id=chap_id, target_lang=target_lang, text=fixed,
+                        model=llm.model_name, critic_passes=0, pieces_done=None,
+                        translated_by=translated_by, overwrite=True,
+                    )
+                replace_open_flags(s, novel_id, chapter_idx, qa_flags)
+        except Exception as e:  # noqa: BLE001 - QA flags are optional
+            log.warning(
+                "translate_step.qa_failed", chapter_idx=chapter_idx, err=str(e)
+            )
         # Relations once. Best-effort: the translation is already saved above,
         # so a failure here must not fail the step or lose the translation.
         try:

@@ -75,7 +75,7 @@ never compiled into the page.
 - **Ingestion**: URL scrape (Playwright), .txt/.epub upload, auto chapter split, language detect.
 - **Glossary-RAG**: Extracts named entities per chapter, embeds source terms, locks translations.
 - **Translator agent**: Looks up glossary before each paragraph, coins new terms with confidence scores.
-- **Critic agent**: Re-reads output, flags glossary drift, retries up to 2x.
+- **Critic agent**: Re-reads output, fixes known glossary drift and queues non-blocking review flags (no retries).
 - **Q&A agent**: Spoiler-filtered retrieval — chunks past `current_chapter` are dropped before answering.
 - **Knowledge graph**: Per-novel character/sect/realm graph with spoiler-aware filter.
 - **Eval harness**: 50 Q&A gold, 500-term gold, DeepL baseline. `pytest eval/` for CI.

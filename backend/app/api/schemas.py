@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -226,3 +227,16 @@ class GlossaryPatch(BaseModel):
 
 TranslateResult.model_rebuild()
 TranslateStepResult.model_rebuild()
+
+
+class ReviewFlagOut(BaseModel):
+    id: int
+    novel_id: int
+    chapter_idx: int
+    kind: str
+    source_span: str
+    target_span: str
+    note: str
+    status: str
+    created_at: Optional[datetime] = None
+    resolved_by: Optional[int] = None
