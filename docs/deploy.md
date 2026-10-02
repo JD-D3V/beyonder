@@ -151,13 +151,14 @@ Without it, ingestion works but translation, embedding, and Q&A all fail.
 - **Models get retired.** Google has already retired both original defaults
   (`text-embedding-004`, then `gemini-2.5-flash`) for newly issued keys, and
   the failure is a 404 at call time, not at boot. If translation or Q&A starts
-  answering "couldn't reach the model", list what the key can actually use:
+  answering "couldn't reach the model", list what the key can actually use via the OpenAI-compatible models endpoint:
 
   ```powershell
-  .\backend\.venv\Scripts\python.exe -c "import google.generativeai as g, os; g.configure(api_key=os.environ['GEMINI_API_KEY']); [print(m.name) for m in g.list_models()]"
+  curl.exe -H "Authorization: Bearer $env:GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/openai/models
   ```
 
-  Then set `GEMINI_MODEL` / `GEMINI_EMBED_MODEL` in `.env` and on Render.
+  Then set `GEMINI_MODEL` in `.env` and on Render. Embeddings run locally
+  (fastembed), so there is no embedding model to retire.
 - **Translating a long book.** Use "translate all" on the book page. It runs
   small batches and saves each chapter as it lands, so stopping, closing the
   tab or losing the connection never discards finished work; reopening and

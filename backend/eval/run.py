@@ -74,8 +74,16 @@ def _resolve_novel_id(slug: str) -> int | None:
     return None
 
 
+_LLM: LLMClient | None = None
+
+
 def _llm() -> LLMClient:
-    return LLMClient("gemini", settings.gemini_api_key)
+    global _LLM
+    if _LLM is None:
+        if not settings.gemini_api_key:
+            raise SystemExit("GEMINI_API_KEY is empty; set it in .env to run eval")
+        _LLM = LLMClient("gemini", settings.gemini_api_key)
+    return _LLM
 
 
 async def run_qa() -> dict[str, Any]:

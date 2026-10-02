@@ -5,7 +5,7 @@
 1. Drop the prompt in `backend/app/agents/prompts.py`. Bump a `_VERSION` constant.
 2. Write the agent function in a new file under `backend/app/agents/`. It should:
    - Take typed kwargs, not a dict.
-   - Use `get_gemini()` for the LLM client (or accept an injected one).
+   - Take a required `client: LLMClient` (`app/llm/client.py`, OpenAI-compatible) and never build one inside the agent; graph nodes read it from `config["configurable"]["llm"]`.
    - Validate output with a JSON schema (see `extractor.py`).
    - Log a `done` event with a row count so eval scripts can count work.
 3. Wire it into `graph/orchestrator.py` as a new node.
