@@ -11,9 +11,9 @@ const PAGE_SIZE = 24;
 // Length buckets map to the API's min/max chapter filters.
 const LENGTHS: Record<string, { label: string; min?: number; max?: number }> = {
   "": { label: "Any length" },
-  short: { label: "Under 100", max: 99 },
-  medium: { label: "100 to 500", min: 100, max: 500 },
-  long: { label: "500 to 1000", min: 500, max: 1000 },
+  short: { label: "<100", max: 99 },
+  medium: { label: "100–500", min: 100, max: 499 },
+  long: { label: "500–1000", min: 500, max: 999 },
   epic: { label: "1000+", min: 1000 },
 };
 

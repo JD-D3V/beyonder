@@ -90,6 +90,9 @@ th, td {
   border-bottom: 1px solid var(--border);
 }
 th { color: var(--muted); font-weight: 600; font-size: 13px; }
+.table td input { width: 100%; min-width: 120px; }
+.flag-item { border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.flag-item:last-child { border-bottom: none; }
 
 .kbd {
   background: var(--panel-2);

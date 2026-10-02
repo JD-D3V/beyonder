@@ -134,6 +134,13 @@ function BookInner() {
       .catch(() => undefined);
   }, [novelId, signedIn]);
 
+  // The glossary depends on who is reading (server caps it at their
+  // progress), so drop the cache on sign-in/out or a different novel.
+  const userId = session?.user.id ?? null;
+  useEffect(() => {
+    setGlossary(null);
+  }, [novelId, userId]);
+
   useEffect(() => {
     if (!novelId) return;
     if (tab === "glossary" && glossary === null) {

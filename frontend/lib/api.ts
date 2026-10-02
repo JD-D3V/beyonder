@@ -367,8 +367,11 @@ export const api = {
     answer_lang?: string;
     top_k?: number;
   }) => req<AskOut>("/ask", { method: "POST", body: JSON.stringify(body) }),
-  glossary: (novelId: number, upTo: number = 100000) =>
-    req<GlossaryEntry[]>(`/novels/${novelId}/glossary?up_to=${upTo}`),
+  // up_to omitted: the server caps signed-in readers at their own progress.
+  glossary: (novelId: number, upTo?: number) =>
+    req<GlossaryEntry[]>(
+      `/novels/${novelId}/glossary${upTo === undefined ? "" : `?up_to=${upTo}`}`,
+    ),
   kg: (novelId: number, upTo: number = 100000) =>
     req<KgOut>(`/novels/${novelId}/kg?up_to=${upTo}`),
   setProgress: (body: { novel_id: number; current_chapter: number }) =>
