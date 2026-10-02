@@ -1,9 +1,5 @@
-import {
-  announceUnauthorized,
-  getHandle,
-  getToken,
-  UnauthorizedError,
-} from "./auth";
+import { getLlmConfig } from "./llmKey";
+import { clearSession, getSession } from "./session";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -12,32 +8,100 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
 // them through /translate/step: resumable, piece-by-piece, no critic.
 export const CRITIC_MAX_CHARS = 2500;
 
-// Attached to every request. Empty when the API is open, which is how local
-// development runs.
-export function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { "X-API-Token": token } : {};
+// Thrown when an AI route needs a key and none is saved, or the server says
+// so (402). Pages can send the reader to Settings.
+export class KeyRequiredError extends Error {
+  constructor(message = "Add your AI key in Settings to use this.") {
+    super(message);
+    this.name = "KeyRequiredError";
+  }
+}
+
+export class UnauthorizedError extends Error {
+  constructor(message = "Please sign in.") {
+    super(message);
+    this.name = "UnauthorizedError";
+  }
+}
+
+// Only these routes receive the user's AI key.
+function isAiRoute(path: string): boolean {
+  return path === "/ask" || path.startsWith("/translate");
+}
+
+function authHeaders(): Record<string, string> {
+  const s = getSession();
+  return s ? { Authorization: `Bearer ${s.token}` } : {};
+}
+
+function llmHeaders(path: string): Record<string, string> {
+  if (!isAiRoute(path)) return {};
+  const c = getLlmConfig();
+  if (!c) return {};
+  const h: Record<string, string> = {
+    "X-LLM-Provider": c.provider,
+    "X-LLM-Key": c.key,
+  };
+  if (c.model) h["X-LLM-Model"] = c.model;
+  return h;
+}
+
+// Handles {"detail": {"code", "detail"}}, {"detail": "text"} and FastAPI
+// validation arrays.
+function errorMessage(body: unknown, fallback: string): string {
+  const d = (body as { detail?: unknown } | null)?.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    const parts = d.map((e) =>
+      e && typeof e === "object" && "msg" in e ? String((e as { msg: unknown }).msg) : "",
+    );
+    const joined = parts.filter(Boolean).join("; ");
+    return joined || fallback;
+  }
+  if (d && typeof d === "object" && "detail" in d) {
+    return String((d as { detail: unknown }).detail);
+  }
+  return fallback;
+}
+
+async function check(res: Response, signedIn: boolean): Promise<void> {
+  if (res.ok) return;
+  const body = await res.json().catch(() => null);
+  const fallback = `${res.status} ${res.statusText}`;
+  const msg = errorMessage(body, fallback);
+  if (res.status === 402) throw new KeyRequiredError(msg);
+  if (res.status === 401) {
+    // Only wipe the session if we had sent one; a failed login is also a 401.
+    if (signedIn) clearSession();
+    throw new UnauthorizedError(msg);
+  }
+  throw new Error(msg);
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const auth = authHeaders();
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
-      ...authHeaders(),
+      ...auth,
+      ...llmHeaders(path),
       ...(init?.headers || {}),
     },
   });
-  if (res.status === 401) {
-    // Raise the unlock prompt wherever the call came from.
-    announceUnauthorized();
-    throw new UnauthorizedError();
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
-  }
+  await check(res, "Authorization" in auth);
   return (await res.json()) as T;
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  is_admin: boolean;
+}
+
+export interface AuthResult {
+  token: string;
+  user: AuthUser;
 }
 
 export interface Novel {
@@ -210,20 +274,14 @@ export const api = {
     for (const [k, v] of Object.entries(meta)) {
       if (v) form.append(k, v);
     }
+    const auth = authHeaders();
     const res = await fetch(`${API_BASE}/novels/upload`, {
       method: "POST",
       // No content-type here: the browser sets it with the multipart boundary.
-      headers: authHeaders(),
+      headers: auth,
       body: form,
     });
-    if (res.status === 401) {
-      announceUnauthorized();
-      throw new UnauthorizedError();
-    }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${text}`);
-    }
+    await check(res, "Authorization" in auth);
     return (await res.json()) as IngestResult;
   },
 
@@ -271,10 +329,18 @@ export const api = {
   setProgress: (body: { novel_id: number; current_chapter: number }) =>
     req<{ ok: boolean }>("/progress", {
       method: "POST",
-      body: JSON.stringify({ ...body, handle: getHandle() }),
+      body: JSON.stringify(body),
     }),
   getProgress: (novelId: number) =>
-    req<{ handle: string; novel_id: number; current_chapter: number }>(
-      `/progress?novel_id=${novelId}&handle=${encodeURIComponent(getHandle())}`,
+    req<{ novel_id: number; current_chapter: number }>(
+      `/progress?novel_id=${novelId}`,
     ),
+
+  // --- accounts ---
+  login: (body: { email: string; password: string }) =>
+    req<AuthResult>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
+  signup: (body: { email: string; password: string; invite: string }) =>
+    req<AuthResult>("/auth/signup", { method: "POST", body: JSON.stringify(body) }),
+  logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  me: () => req<AuthUser>("/auth/me"),
 };

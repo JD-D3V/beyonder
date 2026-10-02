@@ -1,7 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Nav from "../components/Nav";
-import TokenGate from "../components/TokenGate";
 
 export const metadata: Metadata = {
   title: "Beyonder",
@@ -14,7 +13,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <Nav />
         <main className="container">{children}</main>
-        <TokenGate />
       </body>
     </html>
   );

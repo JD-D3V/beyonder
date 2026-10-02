@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
+import { clearSession, getSession, SESSION_EVENT, type Session } from "../lib/session";
 
 const LINKS = [
   { href: "/", label: "Library" },
@@ -14,6 +17,31 @@ const LINKS = [
 
 export default function Nav() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [session, setSession] = useState<Session | null>(null);
+
+  // Read storage after mount so the static HTML and first render match.
+  useEffect(() => {
+    const sync = () => setSession(getSession());
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  async function signOut() {
+    try {
+      await api.logout();
+    } catch {
+      // Sign out locally even if the server cannot be reached.
+    }
+    clearSession();
+    router.push("/login");
+  }
+
   return (
     <nav className="topnav">
       <span className="brand">Beyonder</span>
@@ -26,6 +54,21 @@ export default function Nav() {
             </Link>
           );
         })}
+        <Link href="/settings" className={pathname.startsWith("/settings") ? "active" : ""}>
+          Settings
+        </Link>
+        {session ? (
+          <>
+            <span className="muted small">{session.user.email}</span>
+            <a href="#" onClick={(e) => { e.preventDefault(); void signOut(); }}>
+              Sign out
+            </a>
+          </>
+        ) : (
+          <Link href="/login" className={pathname.startsWith("/login") ? "active" : ""}>
+            Sign in
+          </Link>
+        )}
       </div>
     </nav>
   );
