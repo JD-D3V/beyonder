@@ -62,3 +62,16 @@ gemini_limiter = AsyncRateLimiter(
     rpm=settings.gemini_rpm_limit,
     concurrency=settings.gemini_concurrency,
 )
+
+
+_keyed: dict[str, AsyncRateLimiter] = {}
+
+
+def limiter_for(key_id: str) -> AsyncRateLimiter:
+    """One bucket per API-key fingerprint (sha256(key)[:16])."""
+    lim = _keyed.get(key_id)
+    if lim is None:
+        lim = _keyed[key_id] = AsyncRateLimiter(
+            rpm=settings.gemini_rpm_limit, concurrency=settings.gemini_concurrency
+        )
+    return lim

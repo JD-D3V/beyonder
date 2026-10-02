@@ -8,6 +8,15 @@ from .config import settings
 
 _configured = False
 
+_SECRET_KEYS = {"x-llm-key", "api_key", "llm_key", "authorization", "x_llm_key"}
+
+
+def redact_llm_keys(_logger, _method, event_dict):
+    for k in list(event_dict):
+        if str(k).lower() in _SECRET_KEYS:
+            event_dict[k] = "***"
+    return event_dict
+
 
 def _configure() -> None:
     global _configured
@@ -23,6 +32,7 @@ def _configure() -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            redact_llm_keys,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
