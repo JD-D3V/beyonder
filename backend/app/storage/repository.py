@@ -584,10 +584,16 @@ def list_flags(
     return session.execute(q.order_by(ReviewFlag.chapter_idx, ReviewFlag.id)).scalars().all()
 
 
-def resolve_flag(session: Session, flag_id: int, user_id: int) -> ReviewFlag | None:
+def resolve_flag(
+    session: Session, flag_id: int, user_id: int, wrong_rendering: str | None = None
+) -> ReviewFlag | None:
+    """Close a flag. For glossary_drift, ``wrong_rendering`` teaches the fixer."""
     f = session.get(ReviewFlag, flag_id)
     if f is None:
         return None
+    wr = (wrong_rendering or "").strip()
+    if wr and f.kind == "glossary_drift":
+        f.target_span = wr
     f.status = "resolved"
     f.resolved_by = user_id
     session.flush()

@@ -24,6 +24,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
+
 from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import split_paragraphs, translate_paragraph
 from ..common.logging import get_logger
@@ -31,6 +33,7 @@ from ..glossary.seed import match_seed
 from ..review.checks import deterministic_flags
 from ..llm.client import LLMClient
 from ..storage.db import get_session
+from ..storage.models import Translation
 from ..storage.repository import (
     get_chapter_by_idx,
     get_novel,
@@ -237,13 +240,19 @@ async def translate_step(
             with get_session() as s:
                 variants = load_variants(s, novel_id)
                 fixed, qa_flags = deterministic_flags(source, acc, glossary, variants)
-                if fixed != acc:
-                    upsert_translation(
-                        s, chapter_id=chap_id, target_lang=target_lang, text=fixed,
-                        model=llm.model_name, critic_passes=0, pieces_done=None,
-                        translated_by=translated_by, overwrite=True,
+                # Lock the row and only act if it is still the text QA ran on.
+                row = s.execute(
+                    select(Translation)
+                    .where(
+                        Translation.chapter_id == chap_id,
+                        Translation.target_lang == target_lang,
                     )
-                replace_open_flags(s, novel_id, chapter_idx, qa_flags)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if row is not None and row.text == acc and row.pieces_done is None:
+                    if fixed != acc:
+                        row.text = fixed
+                    replace_open_flags(s, novel_id, chapter_idx, qa_flags)
         except Exception as e:  # noqa: BLE001 - QA flags are optional
             log.warning(
                 "translate_step.qa_failed", chapter_idx=chapter_idx, err=str(e)

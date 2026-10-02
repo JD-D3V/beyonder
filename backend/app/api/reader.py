@@ -27,6 +27,7 @@ from .schemas import (
     KgOut,
     ProgressIn,
     ProgressOut,
+    ResolveFlagIn,
     ReviewFlagOut,
 )
 
@@ -153,15 +154,32 @@ def _flag_out(f) -> ReviewFlagOut:
 
 
 @router.get("/novels/{novel_id}/flags", response_model=list[ReviewFlagOut])
-async def flags(novel_id: int, status: str | None = "open", chapter: int | None = None):
+async def flags(
+    novel_id: int,
+    status: str | None = "open",
+    chapter: int | None = None,
+    up_to: int | None = None,
+    user: User | None = Depends(current_user_optional),
+):
     with get_session() as s:
-        return [_flag_out(f) for f in list_flags(s, novel_id, status, chapter)]
+        limit = _up_to(s, user, novel_id, up_to)
+        return [
+            _flag_out(f)
+            for f in list_flags(s, novel_id, status, chapter)
+            if f.chapter_idx <= limit
+        ]
 
 
 @router.post("/flags/{flag_id}/resolve", response_model=ReviewFlagOut)
-async def resolve(flag_id: int, admin: User = Depends(require_admin)):
+async def resolve(
+    flag_id: int,
+    body: ResolveFlagIn | None = None,
+    admin: User = Depends(require_admin),
+):
     with get_session() as s:
-        f = resolve_flag(s, flag_id, admin.id)
+        f = resolve_flag(
+            s, flag_id, admin.id, wrong_rendering=body.wrong_rendering if body else None
+        )
         if f is None:
             raise HTTPException(404, "flag not found")
         return _flag_out(f)

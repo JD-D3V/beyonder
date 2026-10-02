@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from ..common.logging import get_logger
 from ..llm.client import LLMClient
-from ..review.checks import deterministic_flags, drift_violations
+from ..review.checks import deterministic_flags
 from .prompts import CRITIC_SYSTEM, CRITIC_USER_TEMPLATE, CRITIC_VERSION
 
 log = get_logger(__name__)
@@ -43,12 +43,6 @@ class CritiqueResult:
     ok: bool
     flags: list[dict] = field(default_factory=list)
     fixed_text: str = ""
-
-
-def _deterministic_violations(
-    *, source: str, candidate: str, glossary: list[tuple[str, str]]
-) -> list[dict]:
-    return drift_violations(source=source, candidate=candidate, glossary=glossary)
 
 
 def _clean_llm_flags(data) -> list[dict]:

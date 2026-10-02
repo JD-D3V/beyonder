@@ -9,9 +9,26 @@ _CJK_RUN = re.compile(
 )
 
 
+# Bracketed text is an intentional source annotation, e.g. "Qi (气)".
+_BRACKETED = re.compile(r"\([^()]*\)|（[^（）]*）|\[[^\[\]]*\]")
+
+
 def untranslated_spans(text: str) -> list[str]:
-    """Runs of at least two CJK characters left in the output."""
-    return _CJK_RUN.findall(text or "")
+    """Distinct runs of at least two CJK characters left in the output.
+
+    Runs inside (), （） or [] are skipped; duplicates are reported once.
+    """
+    cleaned = _BRACKETED.sub(" ", text or "")
+    return list(dict.fromkeys(_CJK_RUN.findall(cleaned)))
+
+
+def _variant_re(variant: str) -> re.Pattern[str]:
+    pat = re.escape(variant)
+    if re.match(r"\w", variant):
+        pat = r"\b" + pat
+    if re.search(r"\w$", variant):
+        pat += r"\b"
+    return re.compile(pat, re.IGNORECASE)
 
 
 def drift_violations(
@@ -36,18 +53,27 @@ def fix_glossary_drift(
 ) -> tuple[str, list[dict]]:
     """Replace known wrong renderings with the locked target; flag the rest."""
     flags: list[dict] = []
-    for v in drift_violations(source=source, candidate=candidate, glossary=glossary):
-        src, tgt = v["source_term"], v["expected"]
-        hit = next((w for w in variants.get(src, []) if w and w in candidate), None)
-        if hit is not None:
-            candidate = candidate.replace(hit, tgt)
+    for pair in glossary:
+        # Recomputed per term against the current text, so earlier
+        # replacements never leave a stale result behind.
+        found = drift_violations(source=source, candidate=candidate, glossary=[pair])
+        if not found:
             continue
-        flags.append({
-            "kind": "glossary_drift",
-            "source_span": src,
-            "target_span": "",
-            "note": f"expected '{tgt}'",
-        })
+        src, tgt = found[0]["source_term"], found[0]["expected"]
+        for w in variants.get(src, []):
+            if not w:
+                continue
+            rx = _variant_re(w)
+            if rx.search(candidate):
+                candidate = rx.sub(lambda _m, t=tgt: t, candidate)
+                break
+        else:
+            flags.append({
+                "kind": "glossary_drift",
+                "source_span": src,
+                "target_span": "",
+                "note": f"expected '{tgt}'",
+            })
     return candidate, flags
 
 

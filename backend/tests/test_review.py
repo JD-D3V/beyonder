@@ -127,7 +127,8 @@ def test_flags_route_public_and_resolve(monkeypatch):
         seen["args"] = (novel_id, status, chapter)
         return [row]
 
-    def fake_resolve(s, flag_id, user_id):
+    def fake_resolve(s, flag_id, user_id, wrong_rendering=None):
+        seen["wr"] = wrong_rendering
         row.status, row.resolved_by = "resolved", user_id
         return row
 
@@ -141,14 +142,84 @@ def test_flags_route_public_and_resolve(monkeypatch):
             assert r.status_code == 200
             assert r.json()[0]["kind"] == "idiom"
             assert seen["args"] == (1, "open", 2)
-            r = c.post("/flags/3/resolve")
+            r = c.post("/flags/3/resolve", json={"wrong_rendering": "Wang Lyn"})
             assert r.status_code == 200
+            assert seen["wr"] == "Wang Lyn"
             assert r.json()["status"] == "resolved"
     finally:
         app.dependency_overrides.clear()
 
 
 pytestmark_db = pytest.mark.db
+
+
+def test_variant_is_whole_word_and_case_insensitive():
+    g = [("林", "Wang Lin")]
+    fixed, flags = checks.fix_glossary_drift(
+        "林", "Linda met lin and Lingering Lin.", g, {"林": ["Lin"]}
+    )
+    assert fixed == "Linda met Wang Lin and Lingering Wang Lin."
+    assert flags == []
+
+
+def test_untranslated_dedup_and_brackets():
+    assert checks.untranslated_spans("气功 and 气功 Qi (气功) （青云） [丹药]") == ["气功"]
+
+
+class _U:
+    id = 5
+    is_admin = False
+
+
+def test_flags_route_limits_to_progress(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    import app.api.reader as reader
+    from app.auth.deps import current_user_optional
+
+    def mk(i, ch):
+        return SimpleNamespace(
+            id=i, novel_id=1, chapter_idx=ch, kind="idiom", source_span="",
+            target_span="", note="", status="open", created_at=None, resolved_by=None,
+        )
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    monkeypatch.setattr(reader, "get_session", fake_session)
+    monkeypatch.setattr(reader, "list_flags", lambda s, n, st, ch: [mk(1, 1), mk(2, 5)])
+    monkeypatch.setattr(reader, "get_progress", lambda s, u, n: 2)
+    try:
+        with TestClient(app) as c:
+            assert len(c.get("/novels/1/flags").json()) == 2  # anonymous: no limit
+            app.dependency_overrides[current_user_optional] = lambda: _U()
+            assert [f["id"] for f in c.get("/novels/1/flags").json()] == [1]
+            assert len(c.get("/novels/1/flags?up_to=9").json()) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.db
+def test_resolve_wrong_rendering_feeds_variants(db_session):
+    from app.storage.models import Novel, User
+    from app.storage.repository import (
+        list_flags, load_variants, replace_open_flags, resolve_flag,
+    )
+
+    u = User(email="b@example.com", password_hash="x")
+    n = Novel(title="n", source_lang="zh")
+    db_session.add_all([u, n])
+    db_session.flush()
+    replace_open_flags(db_session, n.id, 1, [
+        {"kind": "glossary_drift", "source_span": "王林", "target_span": "", "note": ""},
+        {"kind": "idiom", "source_span": "x", "target_span": "", "note": ""},
+    ])
+    drift, idiom = list_flags(db_session, n.id, "open", 1)
+    resolve_flag(db_session, drift.id, u.id, wrong_rendering="  Wang Lyn ")
+    resolve_flag(db_session, idiom.id, u.id, wrong_rendering="nope")
+    assert load_variants(db_session, n.id) == {"王林": ["Wang Lyn"]}
 
 
 @pytest.mark.db

@@ -240,3 +240,7 @@ class ReviewFlagOut(BaseModel):
     status: str
     created_at: Optional[datetime] = None
     resolved_by: Optional[int] = None
+
+
+class ResolveFlagIn(BaseModel):
+    wrong_rendering: Optional[str] = None
