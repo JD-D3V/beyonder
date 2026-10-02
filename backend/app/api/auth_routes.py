@@ -1,6 +1,7 @@
 """Accounts: login, invite-only signup, logout, and admin invite management."""
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -8,10 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import sessions
 from ..auth.deps import bearer_token, current_user, require_admin
 from ..auth.passwords import hash_password, verify_password
+from ..auth.throttle import SlidingWindow
+from ..common.config import settings
 from ..storage.db import get_session
 from ..storage.models import Invite, User
 
@@ -25,6 +29,59 @@ _DUMMY_HASH = hash_password("timing-equalizer")
 
 def norm_email(email: str) -> str:
     return email.strip().lower()
+
+
+# argon2 is deliberately slow (~50-100 ms of CPU). Run it in the threadpool so
+# it never blocks the event loop, and at most two at a time so a burst of
+# logins cannot starve every other request of CPU and threads.
+_HASH_SLOTS = asyncio.Semaphore(2)
+
+
+async def _verify(pw: str, hashed: str) -> bool:
+    async with _HASH_SLOTS:
+        return await run_in_threadpool(verify_password, pw, hashed)
+
+
+async def _hash(pw: str) -> str:
+    async with _HASH_SLOTS:
+        return await run_in_threadpool(hash_password, pw)
+
+
+_WINDOW_S = 5 * 60
+_ip_attempts = SlidingWindow(limit=10, window_s=_WINDOW_S)
+_email_attempts = SlidingWindow(limit=5, window_s=_WINDOW_S)
+_signup_ip_attempts = SlidingWindow(limit=10, window_s=_WINDOW_S)
+
+
+def reset_throttles() -> None:
+    for w in (_ip_attempts, _email_attempts, _signup_ip_attempts):
+        w.clear()
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address for throttling.
+
+    Behind a reverse proxy request.client.host is the proxy, so every user
+    would share one bucket. X-Forwarded-For is only read when
+    settings.trust_proxy is set (Render sets it); the right-most entry is the
+    one our proxy appended, the rest are client-supplied and spoofable.
+    """
+    if settings.trust_proxy:
+        fwd = request.headers.get("x-forwarded-for", "")
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={
+            "code": "too_many_attempts",
+            "detail": "Too many attempts. Wait a few minutes and try again.",
+        },
+    )
 
 
 class LoginIn(BaseModel):
@@ -47,19 +104,24 @@ def _user_out(u: User) -> dict:
 
 
 @router.post("/auth/login")
-async def login(body: LoginIn) -> dict:
+async def login(body: LoginIn, request: Request) -> dict:
+    email = norm_email(body.email)
+    if not _ip_attempts.hit(client_ip(request)) or not _email_attempts.hit(email):
+        raise _too_many()
     with get_session() as s:
         user = s.execute(
-            select(User).where(User.email == norm_email(body.email))
+            select(User).where(User.email == email)
         ).scalar_one_or_none()
-        ok = verify_password(body.password, user.password_hash if user else _DUMMY_HASH)
+        ok = await _verify(body.password, user.password_hash if user else _DUMMY_HASH)
         if user is None or not ok:
             raise HTTPException(status_code=401, detail=_BAD_LOGIN)
         return {"token": sessions.create_session(s, user), "user": _user_out(user)}
 
 
 @router.post("/auth/signup")
-async def signup(body: SignupIn) -> dict:
+async def signup(body: SignupIn, request: Request) -> dict:
+    if not _signup_ip_attempts.hit(client_ip(request)):
+        raise _too_many()
     email = norm_email(body.email)
     now = datetime.now(timezone.utc)
     invalid = HTTPException(status_code=400, detail="Invalid or expired invite.")
@@ -67,7 +129,7 @@ async def signup(body: SignupIn) -> dict:
         inv = s.get(Invite, body.invite)
         if inv is None or inv.used_by is not None or inv.expires_at <= now:
             raise invalid
-        user = User(email=email, password_hash=hash_password(body.password))
+        user = User(email=email, password_hash=await _hash(body.password))
         s.add(user)
         try:
             s.flush()

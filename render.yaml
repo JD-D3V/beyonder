@@ -51,6 +51,9 @@ services:
         value: beyonder_chunks
       - key: SCRAPER_BACKEND
         value: http
+      # Render's proxy sets X-Forwarded-For; the login throttle keys on it.
+      - key: TRUST_PROXY
+        value: "true"
       - key: LOG_LEVEL
         value: INFO
       - key: PYTHONUNBUFFERED

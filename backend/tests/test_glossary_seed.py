@@ -117,31 +117,6 @@ def test_insert_seed_terms_never_touches_existing(db_session):
     ])
     assert [t.source_term for t in made] == ["长老"]
     t = db_session.query(Term).filter_by(novel_id=n.id, source_term="师兄").one()
-    assert (t.target_term, t.first_chapter, t.confidence) == ("Mine", 9, 0.1)
-
-
-def test_insert_seed_terms_skips_existing_no_db():
-    from types import SimpleNamespace
-
-    from app.storage.repository import insert_seed_terms
-
-    added = []
-
-    class S:
-        def execute(self, stmt):
-            # Pretend only 师兄 exists.
-            hit = "师兄" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
-            return SimpleNamespace(first=lambda: (1,) if hit else None)
-
-        def add(self, t):
-            added.append(t.source_term)
-
-        def flush(self):
-            pass
-
-    made = insert_seed_terms(S(), novel_id=1, entries=[
-        {"source_term": "师兄", "target_term": "x"},
-        {"source_term": "长老", "target_term": "Elder"},
-        {"source_term": "长老", "target_term": "Elder"},
-    ])
-    assert added == ["长老"] and len(made) == 1
+    db_session.refresh(t)
+    # Rendering and confidence untouched; first_chapter lowers to the earliest.
+    assert (t.target_term, t.first_chapter, t.confidence) == ("Mine", 0, 0.1)

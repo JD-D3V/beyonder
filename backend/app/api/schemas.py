@@ -149,11 +149,11 @@ class TranslateStepResult(BaseModel):
 
 class AskIn(BaseModel):
     novel_id: int
-    question: str
+    question: str = Field(min_length=1, max_length=2000)
     # Ignored: the server uses the stored per-account position.
     current_chapter: Optional[int] = None
     answer_lang: str = "en"
-    top_k: int = 8
+    top_k: int = Field(default=8, ge=1, le=20)
 
 
 class CitationOut(BaseModel):

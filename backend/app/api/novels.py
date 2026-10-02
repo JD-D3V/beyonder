@@ -1,6 +1,7 @@
 """Catalog, chapter reading, ingest, and novel admin routes."""
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -330,13 +331,15 @@ async def upload_novel(
         ) as tmp:
             tmp.write(raw)
             tmp_path = tmp.name
+        if suffix in _EPUB_SUFFIXES:
+            loader = load_epub
+        elif suffix in _PDF_SUFFIXES:
+            loader = load_pdf
+        else:
+            loader = load_txt
         try:
-            if suffix in _EPUB_SUFFIXES:
-                text = load_epub(tmp_path)
-            elif suffix in _PDF_SUFFIXES:
-                text = load_pdf(tmp_path)
-            else:
-                text = load_txt(tmp_path)
+            # Parsing a big PDF/EPUB is CPU-bound; keep it off the event loop.
+            text = await asyncio.to_thread(loader, tmp_path)
         except Exception as e:  # malformed archive, unreadable encoding, ...
             log.warning("upload.parse_fail", name=name, err=str(e))
             raise HTTPException(400, f"could not read {name}: {e}") from e

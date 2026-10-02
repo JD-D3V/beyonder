@@ -7,7 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from sqlalchemy import Select, delete as sa_delete, func, select
+from sqlalchemy import Select, delete as sa_delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -168,6 +169,16 @@ def reset_translation(session: Session, *, chapter_id: int, target_lang: str) ->
 
 # --- Terms ----------------------------------------------------------------
 
+def _select_term(session: Session, novel_id: int, src: str, target_lang: str):
+    return session.execute(
+        select(Term).where(
+            Term.novel_id == novel_id,
+            Term.source_term == src,
+            Term.target_lang == target_lang,
+        )
+    ).scalar_one_or_none()
+
+
 def upsert_terms(
     session: Session,
     *,
@@ -179,6 +190,10 @@ def upsert_terms(
     """Insert or update terms. Higher-confidence wins; locked rows never change.
 
     Rows created by this call are also appended to ``created_out`` if given.
+    Each insert runs in a savepoint: if a concurrent request inserted the same
+    term first (unique ``uq_term_novel_src_lang``), the savepoint is rolled
+    back and the term is merged into their row instead of failing with a 500
+    after the model call has already been paid for.
     """
     out: list[Term] = []
     for e in entries:
@@ -193,13 +208,7 @@ def upsert_terms(
         embedding = e.get("embedding")
         added_by = e.get("added_by")
 
-        existing = session.execute(
-            select(Term).where(
-                Term.novel_id == novel_id,
-                Term.source_term == src,
-                Term.target_lang == target_lang,
-            )
-        ).scalar_one_or_none()
+        existing = _select_term(session, novel_id, src, target_lang)
         if existing is None:
             t = Term(
                 novel_id=novel_id,
@@ -213,11 +222,19 @@ def upsert_terms(
                 embedding=embedding,
                 added_by=added_by,
             )
-            session.add(t)
-            out.append(t)
-            if created_out is not None:
-                created_out.append(t)
-        elif existing.locked:
+            try:
+                with session.begin_nested():
+                    session.add(t)
+            except IntegrityError:
+                existing = _select_term(session, novel_id, src, target_lang)
+                if existing is None:  # pragma: no cover - deleted meanwhile
+                    raise
+            else:
+                out.append(t)
+                if created_out is not None:
+                    created_out.append(t)
+                continue
+        if existing.locked:
             # Admin-curated: leave the rendering alone.
             out.append(existing)
         else:
@@ -241,10 +258,12 @@ def insert_seed_terms(
     entries: Iterable[dict],
     target_lang: str = "en",
 ) -> list[Term]:
-    """Insert seed terms whose source is missing; never touch an existing row.
+    """Insert seed terms whose source is missing. Returns only rows created.
 
-    Returns only the rows created. A row that already exists for this novel and
-    language (any chapter, locked or not) is left exactly as it is.
+    ``INSERT ... ON CONFLICT DO NOTHING`` so two requests seeding the same
+    chapter cannot collide. A row that already exists keeps its rendering,
+    confidence and lock; only its ``first_chapter`` is lowered when this seed
+    hit is earlier, so the term is visible from the first chapter it occurs in.
     """
     out: list[Term] = []
     seen: set[str] = set()
@@ -254,28 +273,39 @@ def insert_seed_terms(
         if not src or not tgt or src in seen:
             continue
         seen.add(src)
-        exists = session.execute(
-            select(Term.id).where(
+        first_chapter = int(e.get("first_chapter", 0))
+        stmt = (
+            pg_insert(Term)
+            .values(
+                novel_id=novel_id,
+                source_term=src,
+                target_term=tgt,
+                target_lang=target_lang,
+                kind=e.get("kind", "other"),
+                first_chapter=first_chapter,
+                confidence=float(e.get("confidence", 0.9)),
+                notes=e.get("notes"),
+                added_by=e.get("added_by"),
+                locked=False,
+            )
+            .on_conflict_do_nothing(constraint="uq_term_novel_src_lang")
+            .returning(Term)
+        )
+        row = session.execute(stmt).scalar_one_or_none()
+        if row is not None:
+            out.append(row)
+            continue
+        session.execute(
+            update(Term)
+            .where(
                 Term.novel_id == novel_id,
                 Term.source_term == src,
                 Term.target_lang == target_lang,
+                Term.first_chapter > first_chapter,
             )
-        ).first()
-        if exists is not None:
-            continue
-        t = Term(
-            novel_id=novel_id,
-            source_term=src,
-            target_term=tgt,
-            target_lang=target_lang,
-            kind=e.get("kind", "other"),
-            first_chapter=int(e.get("first_chapter", 0)),
-            confidence=float(e.get("confidence", 0.9)),
-            notes=e.get("notes"),
-            added_by=e.get("added_by"),
+            .values(first_chapter=first_chapter)
+            .execution_options(synchronize_session=False)
         )
-        session.add(t)
-        out.append(t)
     session.flush()
     return out
 
@@ -512,12 +542,15 @@ def library_rows(
 # --- Per-user shelves -----------------------------------------------------
 
 def set_shelf(session: Session, user_id: int, novel_id: int, shelf: str) -> None:
-    row = session.get(LibraryEntry, (user_id, novel_id))
-    if row is None:
-        session.add(LibraryEntry(user_id=user_id, novel_id=novel_id, shelf=shelf))
-    else:
-        row.shelf = shelf
-        row.updated_at = func.now()
+    """Upsert in one statement so two concurrent PUTs cannot collide."""
+    session.execute(
+        pg_insert(LibraryEntry)
+        .values(user_id=user_id, novel_id=novel_id, shelf=shelf)
+        .on_conflict_do_update(
+            index_elements=[LibraryEntry.user_id, LibraryEntry.novel_id],
+            set_={"shelf": shelf, "updated_at": func.now()},
+        )
+    )
     session.flush()
 
 

@@ -33,16 +33,17 @@ from .schemas import (
 
 router = APIRouter()
 
-# Anonymous readers choose their own horizon; there is no stored position.
-_ANON_UP_TO = 100000
+# No horizon: anonymous readers choose their own (there is no stored
+# position), and admins curating the review queue/glossary see everything.
+_NO_CAP = 100000
 
 
 def _up_to(s, user: User | None, novel_id: int, up_to: int | None) -> int:
     if up_to is not None:
         return up_to
-    if user is not None:
-        return get_progress(s, user.id, novel_id)
-    return _ANON_UP_TO
+    if user is None or user.is_admin:
+        return _NO_CAP
+    return get_progress(s, user.id, novel_id)
 
 
 @router.post("/ask", response_model=AskOut)
@@ -141,6 +142,8 @@ async def read_progress(
 async def progress(body: ProgressIn, user: User = Depends(current_user)) -> dict:
     """Explicit set: unlike reading a chapter, this may move the position back."""
     with get_session() as s:
+        if get_novel(s, body.novel_id) is None:
+            raise HTTPException(404, "novel not found")  # not an FK 500
         set_progress(s, user.id, body.novel_id, body.current_chapter)
     return {"ok": True}
 

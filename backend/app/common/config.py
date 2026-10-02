@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # is what small cloud instances want.
     scraper_backend: str = "auto"
 
+    # Set true only behind a reverse proxy that sets X-Forwarded-For (Render
+    # does). Otherwise the header is client-controlled and is ignored, and the
+    # login throttle keys on the socket peer address.
+    trust_proxy: bool = False
+
     # Spoiler default
     default_current_chapter: int = 0
 
