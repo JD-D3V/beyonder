@@ -7,13 +7,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import Select, delete as sa_delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..common.config import settings
 from .models import (
-    Chapter, Novel, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+    Chapter, LibraryEntry, Novel, ReadingProgress, Relation, ReviewFlag, Term, Translation,
 )
 
 
@@ -396,10 +396,31 @@ class LibraryRow:
     translated_count: int
 
 
-def library_rows(session: Session) -> list[LibraryRow]:
-    """Every novel with its chapter, character and translated-chapter counts.
+@dataclass(frozen=True)
+class CatalogParams:
+    """Filters, sort and paging for the catalog; defaults mean 'everything'."""
 
-    Aggregated in SQL: a shelf of 200 books should still be one round trip.
+    q: str | None = None
+    tag: str | None = None
+    status: str | None = None
+    min_chapters: int | None = None
+    max_chapters: int | None = None
+    sort: str = "updated"  # updated | new | chapters
+    limit: int | None = None
+    offset: int = 0
+    ids: tuple[int, ...] | None = None  # restrict to these novels
+
+
+def _like_escape(raw: str) -> str:
+    return (
+        raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
+def catalog_query(params: CatalogParams) -> Select:
+    """The catalog SELECT: (Novel, chapters, chars, translated), filtered.
+
+    Pure (no session) so the SQL can be asserted on directly.
     """
     chap = (
         select(
@@ -422,20 +443,112 @@ def library_rows(session: Session) -> list[LibraryRow]:
         .group_by(Chapter.novel_id)
         .subquery()
     )
+    n_chapters = func.coalesce(chap.c.chapters, 0)
     stmt = (
         select(
             Novel,
-            func.coalesce(chap.c.chapters, 0),
+            n_chapters,
             func.coalesce(chap.c.chars, 0),
             func.coalesce(trans.c.translated, 0),
         )
         .outerjoin(chap, chap.c.novel_id == Novel.id)
         .outerjoin(trans, trans.c.novel_id == Novel.id)
-        .order_by(Novel.updated_at.desc(), Novel.id.desc())
     )
+    if params.q and params.q.strip():
+        pat = f"%{_like_escape(params.q.strip())}%"
+        stmt = stmt.where(
+            Novel.title.ilike(pat, escape="\\")
+            | Novel.author.ilike(pat, escape="\\")
+        )
+    if params.tag and params.tag.strip():
+        # Stored as "a, b c" (lowercased); normalise to ",a,b c," and match a
+        # whole tag so "art" never matches "martial arts".
+        tag = _like_escape(params.tag.strip().lower())
+        joined = "," + func.replace(func.coalesce(Novel.tags, ""), ", ", ",") + ","
+        stmt = stmt.where(joined.like(f"%,{tag},%", escape="\\"))
+    if params.ids is not None:
+        stmt = stmt.where(Novel.id.in_(params.ids))
+    if params.status:
+        stmt = stmt.where(Novel.status == params.status)
+    if params.min_chapters is not None:
+        stmt = stmt.where(n_chapters >= params.min_chapters)
+    if params.max_chapters is not None:
+        stmt = stmt.where(n_chapters <= params.max_chapters)
+    if params.sort == "new":
+        primary = Novel.created_at.desc()
+    elif params.sort == "chapters":
+        primary = n_chapters.desc()
+    else:
+        primary = Novel.updated_at.desc()
+    stmt = stmt.order_by(primary, Novel.id.desc())
+    if params.limit is not None:
+        stmt = stmt.limit(params.limit).offset(params.offset)
+    return stmt
+
+
+def library_rows(
+    session: Session, params: CatalogParams | None = None
+) -> list[LibraryRow]:
+    """Novels with their chapter, character and translated-chapter counts.
+
+    Aggregated in SQL: a shelf of 200 books should still be one round trip.
+    """
+    stmt = catalog_query(params or CatalogParams())
     return [
         LibraryRow(novel=n, chapter_count=c, char_count=ch, translated_count=t)
         for n, c, ch, t in session.execute(stmt).all()
+    ]
+
+
+# --- Per-user shelves -----------------------------------------------------
+
+def set_shelf(session: Session, user_id: int, novel_id: int, shelf: str) -> None:
+    row = session.get(LibraryEntry, (user_id, novel_id))
+    if row is None:
+        session.add(LibraryEntry(user_id=user_id, novel_id=novel_id, shelf=shelf))
+    else:
+        row.shelf = shelf
+        row.updated_at = func.now()
+    session.flush()
+
+
+def remove_shelf(session: Session, user_id: int, novel_id: int) -> None:
+    """Idempotent: removing a book that is not shelved is a no-op."""
+    session.execute(
+        sa_delete(LibraryEntry).where(
+            LibraryEntry.user_id == user_id, LibraryEntry.novel_id == novel_id
+        )
+    )
+
+
+def shelf_rows(
+    session: Session, user_id: int
+) -> list[tuple[str, LibraryRow, int]]:
+    """(shelf, row, current_chapter) for one user's shelved books, newest first."""
+    entries = session.execute(
+        select(LibraryEntry.novel_id, LibraryEntry.shelf)
+        .where(LibraryEntry.user_id == user_id)
+        .order_by(LibraryEntry.updated_at.desc(), LibraryEntry.novel_id.desc())
+    ).all()
+    if not entries:
+        return []
+    ids = [nid for nid, _ in entries]
+    by_id = {
+        r.novel.id: r
+        for r in library_rows(session, CatalogParams(ids=tuple(ids)))
+    }
+    progress = dict(
+        session.execute(
+            select(ReadingProgress.novel_id, ReadingProgress.chapter_idx).where(
+                ReadingProgress.user_id == user_id,
+                ReadingProgress.novel_id.in_(ids),
+            )
+        ).all()
+    )
+    return [
+        (shelf, by_id[nid], progress.get(nid, 0))
+        for nid, shelf in entries
+        if nid in by_id
     ]
 
 

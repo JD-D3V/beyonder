@@ -4,19 +4,23 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from ..auth.deps import current_user, current_user_optional, require_admin
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
 from ..ingest.epub_loader import load_epub
 from ..ingest.lang import detect_lang
+from ..ingest.pdf_loader import load_pdf
 from ..ingest.scraper import scrape_many
 from ..ingest.splitter import split_chapters
 from ..ingest.txt_loader import load_txt
 from ..storage.db import get_session
 from ..storage.models import Novel, User
 from ..storage.repository import (
+    CatalogParams,
     advance_progress,
     chapter_rows,
     create_novel,
@@ -84,12 +88,25 @@ def _novel_out(
 
 
 @router.get("/novels", response_model=list[NovelOut])
-async def list_novels_route() -> list[NovelOut]:
-    """The whole shelf, newest activity first."""
+async def list_novels_route(
+    q: str | None = Query(default=None, max_length=200),
+    tag: str | None = Query(default=None, max_length=64),
+    status: str | None = Query(default=None, max_length=16),
+    min_chapters: int | None = Query(default=None, ge=0),
+    max_chapters: int | None = Query(default=None, ge=0),
+    sort: Literal["updated", "new", "chapters"] = "updated",
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[NovelOut]:
+    """The catalog: searchable, filterable, newest activity first by default."""
+    params = CatalogParams(
+        q=q, tag=tag, status=status, min_chapters=min_chapters,
+        max_chapters=max_chapters, sort=sort, limit=limit, offset=offset,
+    )
     with get_session() as s:
         return [
             _novel_out(r.novel, r.chapter_count, r.char_count, r.translated_count)
-            for r in library_rows(s)
+            for r in library_rows(s, params)
         ]
 
 
@@ -212,6 +229,7 @@ _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 _TEXT_SUFFIXES = {".txt", ".text", ".md"}
 _EPUB_SUFFIXES = {".epub"}
+_PDF_SUFFIXES = {".pdf"}
 
 
 def _persist_novel(
@@ -283,7 +301,7 @@ async def upload_novel(
     source_lang: str | None = Form(default=None),
     _user: User = Depends(current_user),
 ) -> IngestResult:
-    """Import a book from a .txt, .md or .epub file and save it.
+    """Import a book from a .txt, .md, .epub or .pdf file and save it.
 
     The filename is the fallback title, so dragging in a file and pressing save
     is enough. Both loaders read from disk, so the upload is spooled to a temp
@@ -299,10 +317,10 @@ async def upload_novel(
 
     name = Path(file.filename or "upload.txt").name
     suffix = Path(name).suffix.lower()
-    if suffix not in _TEXT_SUFFIXES | _EPUB_SUFFIXES:
+    if suffix not in _TEXT_SUFFIXES | _EPUB_SUFFIXES | _PDF_SUFFIXES:
         raise HTTPException(
             400,
-            f"unsupported file type {suffix or '(none)'}; use .txt, .md or .epub",
+            f"unsupported file type {suffix or '(none)'}; use .txt, .md, .epub or .pdf",
         )
 
     tmp_path: str | None = None
@@ -313,11 +331,12 @@ async def upload_novel(
             tmp.write(raw)
             tmp_path = tmp.name
         try:
-            text = (
-                load_epub(tmp_path)
-                if suffix in _EPUB_SUFFIXES
-                else load_txt(tmp_path)
-            )
+            if suffix in _EPUB_SUFFIXES:
+                text = load_epub(tmp_path)
+            elif suffix in _PDF_SUFFIXES:
+                text = load_pdf(tmp_path)
+            else:
+                text = load_txt(tmp_path)
         except Exception as e:  # malformed archive, unreadable encoding, ...
             log.warning("upload.parse_fail", name=name, err=str(e))
             raise HTTPException(400, f"could not read {name}: {e}") from e

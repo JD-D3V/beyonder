@@ -44,7 +44,7 @@ KEY = {"X-LLM-Provider": "gemini", "X-LLM-Key": "k"}
 
 def test_anonymous_can_list_novels(client, monkeypatch):
     _stub_sessions(monkeypatch)
-    monkeypatch.setattr("app.api.novels.library_rows", lambda s: [])
+    monkeypatch.setattr("app.api.novels.library_rows", lambda s, params=None: [])
     r = client.get("/novels")
     assert r.status_code == 200 and r.json() == []
 

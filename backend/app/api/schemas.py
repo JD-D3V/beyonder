@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,6 +21,22 @@ class NovelOut(BaseModel):
     char_count: int = 0
     translated_count: int = 0
     updated_at: Optional[str] = None
+
+
+class LibraryItemOut(NovelOut):
+    """A shelved book plus where this reader is up to."""
+
+    current_chapter: int = 0
+
+
+class LibraryOut(BaseModel):
+    reading: list[LibraryItemOut] = Field(default_factory=list)
+    plan: list[LibraryItemOut] = Field(default_factory=list)
+    completed: list[LibraryItemOut] = Field(default_factory=list)
+
+
+class ShelfIn(BaseModel):
+    shelf: Literal["reading", "plan", "completed"]
 
 
 class NovelPatch(BaseModel):
