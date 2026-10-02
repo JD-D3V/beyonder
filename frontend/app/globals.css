@@ -337,6 +337,142 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; }
 .prose { white-space: pre-wrap; line-height: 1.85; font-size: 16px; }
 .prose.source { font-size: 17px; line-height: 2; }
 
+/* Reader theming is scoped to .reader-root; the rest of the site keeps its
+   own palette. Light / sepia / dark tokens: */
+.reader-root {
+  --r-bg: #0d1117;
+  --r-page: #161b22;
+  --r-fg: #e6edf3;
+  --r-muted: #8b949e;
+  --r-border: #30363d;
+  --r-accent: #58a6ff;
+  --r-hl: rgba(88, 166, 255, 0.5);
+  --r-font: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --r-size: 18px;
+  --r-lh: 1.8;
+  --r-width: 720px;
+  color: var(--r-fg);
+  background: var(--r-bg);
+  border-radius: 14px;
+  padding: 14px 16px 24px;
+  /* Pull the themed area to the full content width. */
+  margin: 0 auto;
+}
+.reader-root[data-theme="light"] {
+  --r-bg: #f6f7f9;
+  --r-page: #ffffff;
+  --r-fg: #1f2328;
+  --r-muted: #59636e;
+  --r-border: #d0d7de;
+  --r-accent: #0969da;
+  --r-hl: rgba(9, 105, 218, 0.45);
+}
+.reader-root[data-theme="sepia"] {
+  --r-bg: #eadfc8;
+  --r-page: #f4ecd8;
+  --r-fg: #433422;
+  --r-muted: #7a6a53;
+  --r-border: #d3c4a3;
+  --r-accent: #8a5a1f;
+  --r-hl: rgba(138, 90, 31, 0.5);
+}
+.reader-root a { color: var(--r-accent); }
+.reader-root .muted { color: var(--r-muted); }
+.reader-root .panel,
+.reader-root .reader-settings {
+  background: var(--r-page);
+  border-color: var(--r-border);
+  color: var(--r-fg);
+}
+.reader-root button.secondary,
+.reader-root .seg button {
+  background: var(--r-page);
+  color: var(--r-fg);
+  border: 1px solid var(--r-border);
+}
+.reader-root .seg { border-color: var(--r-border); }
+.reader-root .seg button { border: 0; color: var(--r-muted); }
+.reader-root .seg button.on { background: var(--r-bg); color: var(--r-fg); }
+.reader-root textarea {
+  background: var(--r-bg);
+  color: var(--r-fg);
+  border-color: var(--r-border);
+}
+
+.reader-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.reader-crumbs { color: var(--r-muted); }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 9px; }
+.flag-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  text-decoration: none;
+  border: 1px solid var(--r-border);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.reader-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.reader-nav { display: flex; align-items: center; gap: 12px; }
+.reader-nav button { display: inline-flex; align-items: center; gap: 4px; }
+.reader-page {
+  max-width: var(--r-width);
+  margin: 0 auto 24px;
+  background: var(--r-page);
+  border: 1px solid var(--r-border);
+  border-radius: 12px;
+  padding: 28px clamp(16px, 4vw, 44px) 24px;
+}
+.reader-title { margin: 0 0 18px; font-size: 22px; font-family: var(--r-font); }
+.reader-page .prose {
+  font-family: var(--r-font);
+  font-size: var(--r-size);
+  line-height: var(--r-lh);
+  color: var(--r-fg);
+}
+.reader-page .prose.source { font-size: var(--r-size); line-height: var(--r-lh); }
+.reader-page .prose abbr {
+  text-decoration: underline dotted var(--r-hl);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.reader-foot { display: flex; justify-content: center; margin-top: 28px; }
+.reader-side { max-width: var(--r-width); margin: 0 auto; }
+.translate-box { margin: 0 0 18px; }
+.translate-box button { display: inline-flex; align-items: center; gap: 6px; }
+.new-terms { color: var(--good); margin: 0 0 12px; }
+.reader-settings {
+  max-width: 420px;
+  margin: 0 0 14px auto;
+  border: 1px solid var(--r-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rs-head { display: flex; justify-content: space-between; align-items: center; }
+.rs-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
+.rs-row input[type="range"] { width: 55%; padding: 0; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.lib-actions { padding-top: 0; }
+.lib-actions select { flex: 1; width: auto; min-width: 0; }
+
 /* --- access gate -------------------------------------------------------- */
 
 .gate-backdrop {

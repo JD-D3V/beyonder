@@ -94,7 +94,8 @@ const KIND_COLOR: Record<string, string> = {
 function KgInner() {
   const params = useSearchParams();
   const novelId = Number(params.get("novel") || "0");
-  const upTo = Number(params.get("up_to") || "100000");
+  const upToParam = params.get("up_to");
+  const upTo = upToParam === null || upToParam === "" ? undefined : Number(upToParam);
   const [data, setData] = useState<KgOut | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -125,7 +126,7 @@ function KgInner() {
     <div>
       <h1>Knowledge Graph</h1>
       <p className="muted">
-        Up to chapter {upTo === 100000 ? "∞" : upTo}. Nothing past your reading position is rendered.
+        {upTo === undefined ? "Up to your reading position." : `Up to chapter ${upTo}.`} Nothing past your reading position is rendered.
       </p>
       {err && <div className="error">{err}</div>}
       <div className="panel" style={{ overflow: "auto" }}>

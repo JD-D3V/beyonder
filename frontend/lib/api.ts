@@ -184,7 +184,7 @@ export interface KgOut {
 export interface TranslateResult {
   chapter_idx: number;
   translation: string;
-  new_terms: number;
+  new_terms: GlossaryEntry[];
   critic_passes: number;
 }
 
@@ -203,6 +203,7 @@ export interface TranslateStepResult {
   // A piece came back empty this call (transient rate-limit / outage). No
   // progress; pause and call again.
   stalled: boolean;
+  new_terms?: GlossaryEntry[];
 }
 
 export type Shelf = "reading" | "plan" | "completed";
@@ -363,7 +364,6 @@ export const api = {
   ask: (body: {
     novel_id: number;
     question: string;
-    current_chapter: number;
     answer_lang?: string;
     top_k?: number;
   }) => req<AskOut>("/ask", { method: "POST", body: JSON.stringify(body) }),
@@ -372,8 +372,10 @@ export const api = {
     req<GlossaryEntry[]>(
       `/novels/${novelId}/glossary${upTo === undefined ? "" : `?up_to=${upTo}`}`,
     ),
-  kg: (novelId: number, upTo: number = 100000) =>
-    req<KgOut>(`/novels/${novelId}/kg?up_to=${upTo}`),
+  kg: (novelId: number, upTo?: number) =>
+    req<KgOut>(
+      `/novels/${novelId}/kg${upTo === undefined ? "" : `?up_to=${upTo}`}`,
+    ),
   setProgress: (body: { novel_id: number; current_chapter: number }) =>
     req<{ ok: boolean }>("/progress", {
       method: "POST",
@@ -393,9 +395,15 @@ export const api = {
     }),
   removeFromLibrary: (novelId: number) =>
     req<unknown>(`/library/${novelId}`, { method: "DELETE" }),
-  flags: (novelId: number, status: string = "open", upTo?: number) => {
+  flags: (
+    novelId: number,
+    status: string = "open",
+    upTo?: number,
+    chapter?: number,
+  ) => {
     const sp = new URLSearchParams({ status });
     if (upTo !== undefined) sp.set("up_to", String(upTo));
+    if (chapter !== undefined) sp.set("chapter", String(chapter));
     return req<ReviewFlag[]>(`/novels/${novelId}/flags?${sp.toString()}`);
   },
   resolveFlag: (flagId: number, wrongRendering?: string) =>

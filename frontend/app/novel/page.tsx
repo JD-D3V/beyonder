@@ -69,7 +69,10 @@ function BookInner() {
   const stopped = useRef(false);
 
   const [session, setSession] = useState<Session | null>(null);
-  const [tab, setTab] = useState<Tab>("chapters");
+  const tabParam = params.get("tab");
+  const [tab, setTab] = useState<Tab>(
+    tabParam === "flags" || tabParam === "glossary" ? tabParam : "chapters",
+  );
   const [shelf, setShelf] = useState<Shelf | "">("");
   const [glossary, setGlossary] = useState<GlossaryEntry[] | null>(null);
   const [flags, setFlags] = useState<ReviewFlag[] | null>(null);

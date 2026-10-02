@@ -8,7 +8,8 @@ import { IconLogIn, IconLogOut, IconSettings } from "./icons";
 import { clearSession, getSession, SESSION_EVENT, type Session } from "../lib/session";
 
 const LINKS = [
-  { href: "/", label: "Library" },
+  { href: "/", label: "Catalog" },
+  { href: "/library", label: "My Library" },
   { href: "/import", label: "Import" },
   { href: "/reader", label: "Reader" },
   { href: "/glossary", label: "Glossary" },
