@@ -7,6 +7,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -26,6 +27,7 @@ import {
 import ReaderSettings from "../../components/ReaderSettings";
 import {
   api,
+  ApiError,
   AskOut,
   ChapterDetail,
   ChapterRow,
@@ -45,6 +47,10 @@ import {
 type View = "translation" | "source" | "both";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Layout effects warn when rendered on the server; the static export
+// prerenders this page, so only use one in the browser.
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 function isTyping(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null;
@@ -77,6 +83,7 @@ function ReaderInner() {
   const [newTerms, setNewTerms] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [keyNeeded, setKeyNeeded] = useState(false);
+  const [keyRejected, setKeyRejected] = useState(false);
 
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<AskOut | null>(null);
@@ -86,7 +93,11 @@ function ReaderInner() {
 
   const signedIn = session !== null;
 
-  useEffect(() => {
+  // Prefs come from localStorage, which the prerendered HTML cannot know.
+  // Reading them in a layout effect applies them before the first paint, so
+  // there is no flash of the wrong theme and no hydration mismatch (the
+  // server and first client render both use DEFAULT_PREFS).
+  useIsoLayoutEffect(() => {
     setPrefs(loadPrefs());
   }, []);
 
@@ -106,21 +117,29 @@ function ReaderInner() {
     savePrefs(next);
   }
 
-  const loadChapter = useCallback(async () => {
-    if (!novelId) return;
-    setErr(null);
-    try {
-      // For signed-in readers this also advances server-side progress.
-      const c = await api.getChapter(novelId, chapterIdx);
-      setChapter(c);
-      // Nothing to show in translation view until one exists.
-      setView(c.translation ? "translation" : "source");
-      return c;
-    } catch (e) {
-      setErr(String(e));
-      setChapter(null);
-    }
-  }, [novelId, chapterIdx]);
+  // Bumped whenever the chapter changes or the page unmounts; a running
+  // translate loop holds the token it started with and stops when stale.
+  const runToken = useRef(0);
+
+  const loadChapter = useCallback(
+    async (isCurrent: () => boolean = () => true) => {
+      if (!novelId) return;
+      try {
+        // For signed-in readers this also advances server-side progress.
+        const c = await api.getChapter(novelId, chapterIdx);
+        if (!isCurrent()) return;
+        setChapter(c);
+        // Nothing to show in translation view until one exists.
+        setView(c.translation ? "translation" : "source");
+        return c;
+      } catch (e) {
+        if (!isCurrent()) return;
+        setErr(String(e));
+        setChapter(null);
+      }
+    },
+    [novelId, chapterIdx],
+  );
 
   useEffect(() => {
     if (!novelId) return;
@@ -129,9 +148,22 @@ function ReaderInner() {
   }, [novelId]);
 
   useEffect(() => {
+    const token = ++runToken.current;
+    // Per-chapter transient state starts clean; a stale loop is cancelled.
     setNewTerms(null);
     setAnswer(null);
-    loadChapter();
+    setAskErr(null);
+    setAskKeyNeeded(false);
+    setKeyNeeded(false);
+    setKeyRejected(false);
+    setErr(null);
+    setBusy(false);
+    setProgress(null);
+    loadChapter(() => runToken.current === token);
+    return () => {
+      // Chapter change or unmount: invalidate any in-flight run.
+      if (runToken.current === token) runToken.current += 1;
+    };
   }, [loadChapter]);
 
   // Signed-out readers keep their place in this browser.
@@ -187,11 +219,15 @@ function ReaderInner() {
 
   async function translateThis() {
     if (!chapter) return;
+    const token = runToken.current;
+    const live = () => runToken.current === token;
     setBusy(true);
     setErr(null);
     setKeyNeeded(false);
+    setKeyRejected(false);
     setProgress(null);
     let added = 0;
+    let reload = false;
     try {
       if (chapter.char_count <= CRITIC_MAX_CHARS) {
         const r = await api.translate({ novel_id: novelId, chapter_idx: chapterIdx });
@@ -200,17 +236,19 @@ function ReaderInner() {
         // Long chapter: resumable, critic-free passes until complete.
         let stalls = 0;
         for (;;) {
+          if (!live()) return;
           const r = await api.translateStep({
             novel_id: novelId,
             chapter_idx: chapterIdx,
           });
+          if (!live()) return;
           added += r.new_terms?.length ?? 0;
           if (r.complete) break;
           if (r.stalled) {
             stalls += 1;
             if (stalls > 8) {
               throw new Error(
-                "Gemini kept returning nothing — likely the free daily quota. " +
+                "The AI provider kept returning nothing, likely a quota limit. " +
                   "Progress is saved; resume this later.",
               );
             }
@@ -221,20 +259,29 @@ function ReaderInner() {
             setProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
             await sleep(4000); // pace under the 15 req/min free tier
           }
+          if (!live()) return;
         }
       }
-      setNewTerms(added);
+      reload = true;
+      if (live()) setNewTerms(added);
     } catch (e) {
+      if (!live()) return;
       if (e instanceof KeyRequiredError) setKeyNeeded(true);
-      else setErr(String(e));
-    } finally {
-      // Also covers 409 already_translated: reloading shows the saved text.
-      await loadChapter();
-      loadGlossary();
-      api.listChapters(novelId).then(setChapters).catch(() => undefined);
-      setBusy(false);
-      setProgress(null);
+      else if (e instanceof ApiError && e.code === "already_translated") reload = true;
+      else if (e instanceof ApiError && e.code === "llm_rate_limited")
+        setErr("The AI provider is rate-limiting your key, try again in a minute.");
+      else if (e instanceof ApiError && e.code === "llm_key_invalid") setKeyRejected(true);
+      else setErr(e instanceof Error ? e.message : String(e));
     }
+    if (!live()) return;
+    if (reload) {
+      await loadChapter(live);
+      if (!live()) return;
+      loadGlossary();
+      api.listChapters(novelId).then((c) => live() && setChapters(c)).catch(() => undefined);
+    }
+    setBusy(false);
+    setProgress(null);
   }
 
   async function ask() {
@@ -389,6 +436,11 @@ function ReaderInner() {
       )}
 
       {err && <div className="error">{err}</div>}
+      {keyRejected && (
+        <div className="error">
+          Your API key was rejected — check <Link href="/settings">Settings</Link>.
+        </div>
+      )}
       {keyNeeded && (
         <div className="error">
           Translation needs an AI key. <Link href="/settings">Add your API key</Link>

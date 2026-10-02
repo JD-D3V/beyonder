@@ -8,7 +8,8 @@ import { api, GlossaryEntry } from "../../lib/api";
 function GlossaryInner() {
   const params = useSearchParams();
   const novelId = Number(params.get("novel") || "0");
-  const upTo = Number(params.get("up_to") || "100000");
+  const upToParam = params.get("up_to");
+  const upTo = upToParam === null || upToParam === "" ? undefined : Number(upToParam);
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -63,7 +64,7 @@ function GlossaryInner() {
             ))}
           </select>
           <span className="muted small">
-            Showing terms up to chapter <b>{upTo === 100000 ? "∞" : upTo}</b>
+            {upTo === undefined ? "Showing terms up to your reading position" : <>Showing terms up to chapter <b>{upTo}</b></>}
           </span>
         </div>
       </div>

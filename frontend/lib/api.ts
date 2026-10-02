@@ -17,6 +17,19 @@ export class KeyRequiredError extends Error {
   }
 }
 
+// Any other non-2xx response, with the HTTP status and the server's
+// machine-readable code (from {"detail": {"code", ...}}) when it sent one.
+export class ApiError extends Error {
+  status: number;
+  code: string | null;
+  constructor(message: string, status: number, code: string | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export class UnauthorizedError extends Error {
   constructor(message = "Please sign in.") {
     super(message);
@@ -48,6 +61,14 @@ function llmHeaders(path: string): Record<string, string> {
 
 // Handles {"detail": {"code", "detail"}}, {"detail": "text"} and FastAPI
 // validation arrays.
+function errorCode(body: unknown): string | null {
+  const d = (body as { detail?: unknown } | null)?.detail;
+  if (d && typeof d === "object" && !Array.isArray(d) && "code" in d) {
+    return String((d as { code: unknown }).code);
+  }
+  return null;
+}
+
 function errorMessage(body: unknown, fallback: string): string {
   const d = (body as { detail?: unknown } | null)?.detail;
   if (typeof d === "string") return d;
@@ -75,7 +96,7 @@ async function check(res: Response, signedIn: boolean): Promise<void> {
     if (signedIn) clearSession();
     throw new UnauthorizedError(msg);
   }
-  throw new Error(msg);
+  throw new ApiError(msg, res.status, errorCode(body));
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
