@@ -41,43 +41,35 @@ Run this once from your machine, against the cloud database:
 .\run.ps1 migrate
 ```
 
-It reads `DATABASE_URL` from `.env`. Re-run it after every new Alembic
-revision; nothing in the deployed container migrates on boot.
+It reads `DATABASE_URL` from `.env` (macOS: `make migrate`). Migrations run
+through `0007` (accounts, glossary, review flags). Re-run it after every new
+Alembic revision; nothing in the deployed container migrates on boot.
 
 ## 4. API on Render
 
 1. https://render.com -> New -> Blueprint -> pick this repo. Render reads
    [`render.yaml`](../render.yaml).
-2. Fill in the five values marked "sync: false":
-   `GEMINI_API_KEY`, `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`,
-   `CORS_ORIGINS`.
+2. Fill in the values marked "sync: false":
+   `GEMINI_API_KEY` (used only for the admin; other users bring their own),
+   `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `CORS_ORIGINS`,
+   `ADMIN_EMAIL`, `ADMIN_PASSWORD`.
 3. `CORS_ORIGINS` is your Pages origin with no trailing slash and no path,
    for example `https://jd-d3v.github.io`. Comma-separate to add more.
-4. `API_TOKEN` is the shared secret that keeps the library private. Generate
-   one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-   Leave it unset and the API is open to anyone who finds the URL, which on a
-   public site means anyone: the API address is compiled into the page.
-
-   The token is never built into the frontend, because a static site cannot
-   hold a secret. The first time a browser hits the API it gets a 401 and the
-   site asks for the token, then keeps it in that browser's local storage. Each
-   device unlocks once. To revoke access, change the value here and every
-   browser is locked out at its next request.
-
-   `/health` stays open so the platform healthcheck keeps working, and CORS
-   preflights are never challenged, because a browser sends those before it is
-   allowed to attach the header.
-4. Deploy. Health is `GET /health`; interactive docs are at `/docs`.
+4. `ADMIN_EMAIL` / `ADMIN_PASSWORD` define the single owner account. They are
+   only read by the `create_admin` step below, so you can remove them from the
+   dashboard afterwards. Reading is public; everyone else needs an invite
+   (`POST /admin/invites` as admin) and their own AI key.
+5. Deploy. Health is `GET /health`; interactive docs are at `/docs`.
 
 Note the service URL, e.g. `https://beyonder-api.onrender.com`.
 
 `GET /health` reports which build answered, so a stale deploy is obvious:
 
 ```json
-{"ok": true, "commit": "abd2d80", "model": "gemini-3.6-flash", "embed_model": "gemini-embedding-001"}
+{"ok": true, "commit": "abd2d80", "model": "gemini-3.6-flash", "embed_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}
 ```
 
-If `commit` lags the repo, the service did not redeploy. If `embed_model`
+If `commit` lags the repo, the service did not redeploy. If `model`
 is not what render.yaml says, the dashboard holds an older value: blueprint
 edits do not overwrite env vars that already exist on the service. Fix it in
 the dashboard.
@@ -85,7 +77,23 @@ the dashboard.
 **The free instance sleeps.** After 15 idle minutes the next request takes
 about 50 seconds to wake it. The frontend will look frozen on that first call.
 
-## 5. Frontend on GitHub Pages
+## 5. Create the admin and rebuild vectors
+
+From your machine, with `.env` pointing at the cloud database, Qdrant and
+holding `ADMIN_EMAIL` / `ADMIN_PASSWORD`:
+
+```powershell
+.\run.ps1 admin      # macOS: make admin. Refuses if an admin already exists.
+```
+
+**Upgrading from v1:** embeddings are now local (384 dimensions, was 768).
+After migrating, rebuild the Qdrant collection:
+
+```powershell
+.\run.ps1 reembed    # macOS: make reembed
+```
+
+## 6. Frontend on GitHub Pages
 
 1. Repo -> Settings -> Pages -> Source: **GitHub Actions**.
 2. Repo -> Settings -> Secrets and variables -> Actions -> Variables, add:
@@ -134,8 +142,10 @@ local Postgres and Qdrant. Use it to reproduce a production problem.
 
 ## Before the first real request
 
-Set `GEMINI_API_KEY` (free, no card, https://aistudio.google.com/apikey).
-Without it, ingestion works but translation, embedding, and Q&A all fail.
+Set `GEMINI_API_KEY` (free, no card, https://aistudio.google.com/apikey) for
+the admin account, or add a key in the app's Settings. Without a key,
+translation and Q&A return `402 llm_key_required`; ingestion and embedding
+(local) still work.
 
 ```powershell
 .\run.ps1 smoke      # fabricated demo novel, end-to-end through Gemini
@@ -149,7 +159,7 @@ Without it, ingestion works but translation, embedding, and Q&A all fail.
   `SCRAPER_BACKEND=auto` and `playwright install chromium` for those, or
   upload the text directly.
 - **Models get retired.** Google has already retired both original defaults
-  (`text-embedding-004`, then `gemini-2.5-flash`) for newly issued keys, and
+  (`gemini-2.5-flash` among them) for newly issued keys, and
   the failure is a 404 at call time, not at boot. If translation or Q&A starts
   answering "couldn't reach the model", list what the key can actually use via the OpenAI-compatible models endpoint:
 

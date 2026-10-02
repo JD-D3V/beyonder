@@ -63,6 +63,32 @@ crypto miners) raised the bar on what counts as "good enough."
   put this on a server.
 - Logging never includes the Gemini key or full request bodies.
 
+## User API keys (bring your own key)
+
+- A user's AI key lives only in their browser. It is sent per request in the
+  `X-LLM-Key` header (with `X-LLM-Provider` / `X-LLM-Model`) and is never
+  written to the database.
+- Server logging redacts `x-llm-key`, `api_key`, `llm_key` and `authorization`
+  (`app/common/logging.py`). The key is held on the in-memory client and the
+  outbound `Authorization` header only.
+- The server's `GEMINI_API_KEY` is reachable only by the admin when no key is
+  supplied (`app/llm/resolve.py`); everyone else gets `402 llm_key_required`.
+
+## SSRF guard on URL ingest
+
+`POST /novels/ingest/url` runs `assert_public_url` (`app/ingest/scraper.py`)
+before every fetch: only http/https, and every address the host resolves to must
+be public (no loopback, private, link-local, reserved, multicast or unspecified).
+Redirects are followed manually (max 5) with the same check at each hop. It does
+not defend against DNS rebinding by an attacker who controls a nameserver.
+
+## Icons
+
+Icons are Aria Icons (Lucide, ISC), vendored as source. `frontend/scripts/fetch-icons.sh`
+downloads the SVGs as plain data and allow-lists their attributes. The
+aria-icons CLI is deliberately not run: it is an npm package, and executing it
+would put npm and its install scripts on the host, which this project forbids.
+
 ## Secrets management
 
 - `.env` is git-ignored. `.gitignore` also catches `*.key`, `*.pem`,
