@@ -111,7 +111,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   await check(res, "Authorization" in auth);
-  return (await res.json()) as T;
+  // 204 No Content (e.g. DELETE /library/{id}) and empty bodies have no JSON.
+  if (res.status === 204) return undefined as T;
+  const raw = await res.text();
+  return (raw ? JSON.parse(raw) : undefined) as T;
 }
 
 export interface AuthUser {
@@ -221,8 +224,8 @@ export interface TranslateStepResult {
   pieces_done: number;
   pieces_total: number;
   complete: boolean;
-  // A piece came back empty this call (transient rate-limit / outage). No
-  // progress; pause and call again.
+  // A piece came back blank this call without a model error (key, rate-limit
+  // and outage errors are thrown as ApiError). No progress; pause and retry.
   stalled: boolean;
   new_terms?: GlossaryEntry[];
 }
@@ -358,7 +361,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  translate: (body: { novel_id: number; chapter_idx: number; target_lang?: string }) =>
+  // force: admin-only re-translate of a complete chapter (ignored otherwise).
+  translate: (body: {
+    novel_id: number;
+    chapter_idx: number;
+    target_lang?: string;
+    force?: boolean;
+  }) =>
     req<TranslateResult>("/translate", {
       method: "POST",
       body: JSON.stringify(body),
@@ -373,10 +382,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
   // One resumable pass over a long chapter. Call until `complete`.
+  // force (admin, first call only): delete the saved translation and restart.
   translateStep: (body: {
     novel_id: number;
     chapter_idx: number;
     target_lang?: string;
+    force?: boolean;
   }) =>
     req<TranslateStepResult>("/translate/step", {
       method: "POST",

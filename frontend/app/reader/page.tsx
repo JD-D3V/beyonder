@@ -90,8 +90,10 @@ function ReaderInner() {
   const [asking, setAsking] = useState(false);
   const [askErr, setAskErr] = useState<string | null>(null);
   const [askKeyNeeded, setAskKeyNeeded] = useState(false);
+  const [askKeyRejected, setAskKeyRejected] = useState(false);
 
   const signedIn = session !== null;
+  const isAdmin = Boolean(session?.user.is_admin);
 
   // Prefs come from localStorage, which the prerendered HTML cannot know.
   // Reading them in a layout effect applies them before the first paint, so
@@ -147,6 +149,29 @@ function ReaderInner() {
     api.listChapters(novelId).then(setChapters).catch(() => undefined);
   }, [novelId]);
 
+  // Each loader keeps a sequence number so only the newest response lands:
+  // a fetch issued before the chapter load (old progress) can never overwrite
+  // the one issued after it.
+  const glossSeq = useRef(0);
+  const loadGlossary = useCallback(() => {
+    if (!novelId) return;
+    const n = ++glossSeq.current;
+    api
+      .glossary(novelId)
+      .then((g) => n === glossSeq.current && setGlossary(g))
+      .catch(() => n === glossSeq.current && setGlossary([]));
+  }, [novelId]);
+
+  const flagSeq = useRef(0);
+  const loadFlags = useCallback(() => {
+    if (!novelId) return;
+    const n = ++flagSeq.current;
+    api
+      .flags(novelId, "open", undefined, chapterIdx)
+      .then((f) => n === flagSeq.current && setFlagCount(f.length))
+      .catch(() => n === flagSeq.current && setFlagCount(0));
+  }, [novelId, chapterIdx]);
+
   useEffect(() => {
     const token = ++runToken.current;
     // Per-chapter transient state starts clean; a stale loop is cancelled.
@@ -154,17 +179,25 @@ function ReaderInner() {
     setAnswer(null);
     setAskErr(null);
     setAskKeyNeeded(false);
+    setAskKeyRejected(false);
     setKeyNeeded(false);
     setKeyRejected(false);
     setErr(null);
     setBusy(false);
     setProgress(null);
-    loadChapter(() => runToken.current === token);
+    const isCurrent = () => runToken.current === token;
+    // Opening a chapter advances server-side progress, which widens what the
+    // glossary and flags may show: fetch them again once the load is done.
+    loadChapter(isCurrent).then(() => {
+      if (!isCurrent()) return;
+      loadGlossary();
+      loadFlags();
+    });
     return () => {
       // Chapter change or unmount: invalidate any in-flight run.
       if (runToken.current === token) runToken.current += 1;
     };
-  }, [loadChapter]);
+  }, [loadChapter, loadGlossary, loadFlags]);
 
   // Signed-out readers keep their place in this browser.
   useEffect(() => {
@@ -179,22 +212,12 @@ function ReaderInner() {
     }
   }, [novelId, chapterIdx]);
 
-  const loadGlossary = useCallback(() => {
-    if (!novelId) return;
-    api.glossary(novelId).then(setGlossary).catch(() => setGlossary([]));
-  }, [novelId]);
-
+  // Signing in or out changes the horizon too. Keyed on the session only:
+  // chapter changes are handled by the load effect above.
   useEffect(() => {
     loadGlossary();
-  }, [loadGlossary, signedIn]);
-
-  useEffect(() => {
-    if (!novelId) return;
-    api
-      .flags(novelId, "open", undefined, chapterIdx)
-      .then((f) => setFlagCount(f.length))
-      .catch(() => setFlagCount(0));
-  }, [novelId, chapterIdx, signedIn]);
+    loadFlags();
+  }, [signedIn]);
 
   useEffect(() => {
     if (!novelId || !signedIn) {
@@ -217,7 +240,9 @@ function ReaderInner() {
     }
   }
 
-  async function translateThis() {
+  // force: admin re-translate of a complete chapter (the server ignores it for
+  // everyone else). It replaces the saved translation for every reader.
+  async function translateThis(force = false) {
     if (!chapter) return;
     const token = runToken.current;
     const live = () => runToken.current === token;
@@ -230,17 +255,25 @@ function ReaderInner() {
     let reload = false;
     try {
       if (chapter.char_count <= CRITIC_MAX_CHARS) {
-        const r = await api.translate({ novel_id: novelId, chapter_idx: chapterIdx });
+        const r = await api.translate({
+          novel_id: novelId,
+          chapter_idx: chapterIdx,
+          ...(force ? { force: true } : {}),
+        });
         added += r.new_terms?.length ?? 0;
       } else {
         // Long chapter: resumable, critic-free passes until complete.
         let stalls = 0;
+        // force resets the saved translation, so send it on the first call only.
+        let first = true;
         for (;;) {
           if (!live()) return;
           const r = await api.translateStep({
             novel_id: novelId,
             chapter_idx: chapterIdx,
+            ...(force && first ? { force: true } : {}),
           });
+          first = false;
           if (!live()) return;
           added += r.new_terms?.length ?? 0;
           if (r.complete) break;
@@ -248,11 +281,11 @@ function ReaderInner() {
             stalls += 1;
             if (stalls > 8) {
               throw new Error(
-                "The AI provider kept returning nothing, likely a quota limit. " +
+                "The AI provider kept returning unusable output. " +
                   "Progress is saved; resume this later.",
               );
             }
-            setProgress("Rate-limited, waiting...");
+            setProgress("Model returned nothing, retrying...");
             await sleep(20000);
           } else {
             stalls = 0;
@@ -290,13 +323,17 @@ function ReaderInner() {
     setAnswer(null);
     setAskErr(null);
     setAskKeyNeeded(false);
+    setAskKeyRejected(false);
     try {
       // The server caps answers at the stored reading progress.
       const res = await api.ask({ novel_id: novelId, question: question.trim() });
       setAnswer(res);
     } catch (e) {
       if (e instanceof KeyRequiredError) setAskKeyNeeded(true);
-      else setAskErr(String(e));
+      else if (e instanceof ApiError && e.code === "llm_key_invalid") setAskKeyRejected(true);
+      else if (e instanceof ApiError && e.code === "llm_rate_limited")
+        setAskErr("The AI provider is rate-limiting your key, try again in a minute.");
+      else setAskErr(e instanceof Error ? e.message : String(e));
     } finally {
       setAsking(false);
     }
@@ -482,7 +519,7 @@ function ReaderInner() {
         {chapter && !chapter.complete && (
           <div className="translate-box">
             {signedIn ? (
-              <button onClick={translateThis} disabled={busy}>
+              <button onClick={() => translateThis()} disabled={busy}>
                 {busy ? (
                   <IconLoaderCircle size={16} className="spin" />
                 ) : (
@@ -495,6 +532,31 @@ function ReaderInner() {
                 <Link href="/login">Sign in</Link> to translate this chapter.
               </span>
             )}
+          </div>
+        )}
+
+        {chapter && chapter.complete && isAdmin && (
+          <div className="translate-box">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Re-translate this chapter? The saved translation is replaced for every reader.",
+                  )
+                )
+                  translateThis(true);
+              }}
+              title="Admin: replace the saved translation"
+            >
+              {busy ? (
+                <IconLoaderCircle size={16} className="spin" />
+              ) : (
+                <IconSparkles size={16} />
+              )}{" "}
+              {busy ? progress || "Translating..." : "Re-translate (force)"}
+            </button>
           </div>
         )}
 
@@ -581,6 +643,11 @@ function ReaderInner() {
               <p className="small">
                 <Link href="/settings">Add your API key</Link> to ask questions.
               </p>
+            )}
+            {askKeyRejected && (
+              <div className="error">
+                Your API key was rejected — check <Link href="/settings">Settings</Link>.
+              </div>
             )}
             {askErr && <div className="error">{askErr}</div>}
             {answer && (

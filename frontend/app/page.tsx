@@ -153,7 +153,7 @@ function CatalogInner() {
         <input
           className="grow"
           type="search"
-          placeholder="Search title, author or description"
+          placeholder="Search title or author"
           value={qDraft}
           onChange={(e) => setQDraft(e.target.value)}
         />

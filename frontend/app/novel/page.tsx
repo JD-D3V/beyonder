@@ -515,7 +515,7 @@ function BookInner() {
                       </span>
                     </button>
                   </Link>
-                  {untranslated > 0 && (
+                  {signedIn && untranslated > 0 && (
                     <>
                       <button onClick={() => translateSome(3)} disabled={running}>
                         <IconLanguages /> <span>{running ? "Working..." : "Translate next 3"}</span>
@@ -539,15 +539,21 @@ function BookInner() {
                       <IconX /> <span>Stop</span>
                     </button>
                   )}
-                  <button className="secondary" onClick={embedAll} disabled={busy}>
-                    <IconSearch /> <span>{busy ? "Working..." : "Index for search"}</span>
-                  </button>
-                  <button className="secondary" onClick={() => setEditing(true)}>
-                    <IconPencil /> <span>Edit details</span>
-                  </button>
-                  <button className="secondary" onClick={remove} disabled={busy}>
-                    Delete
-                  </button>
+                  {signedIn && (
+                    <button className="secondary" onClick={embedAll} disabled={busy}>
+                      <IconSearch /> <span>{busy ? "Working..." : "Index for search"}</span>
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <>
+                      <button className="secondary" onClick={() => setEditing(true)}>
+                        <IconPencil /> <span>Edit details</span>
+                      </button>
+                      <button className="secondary" onClick={remove} disabled={busy}>
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
