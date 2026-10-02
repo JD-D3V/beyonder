@@ -22,6 +22,12 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+# Bake the embedding model into the image so cold starts need no network.
+# FASTEMBED_CACHE_PATH is read by fastembed at build and at runtime.
+ENV FASTEMBED_CACHE_PATH=/opt/fastembed
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')" \
+    && chmod -R a+rX /opt/fastembed
+
 COPY . .
 
 # Never run as root.

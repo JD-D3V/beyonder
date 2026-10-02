@@ -59,7 +59,8 @@ class Settings(BaseSettings):
     default_current_chapter: int = 0
 
     # Embedding config
-    embedding_dim: int = 768  # gemini-embedding-001, requested via output_dimensionality
+    embedding_dim: int = 384  # must match embed_model_name
+    embed_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     chunk_target_tokens: int = 500
     chunk_overlap_tokens: int = 50
 
