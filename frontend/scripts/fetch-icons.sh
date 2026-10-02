@@ -78,6 +78,8 @@ import json, re, sys
 
 tmp, out, *ids = sys.argv[1:]
 ALLOWED = {"path", "circle", "rect", "line", "polyline", "polygon", "ellipse"}
+CHILD_ATTRS = {"d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2", "width", "height",
+               "rx", "ry", "points", "fill", "stroke", "strokeWidth", "opacity", "transform"}
 ATTR = re.compile(r'([a-zA-Z][\w:-]*)\s*=\s*"([^"]*)"')
 
 def camel(name):
@@ -141,7 +143,16 @@ for id in ids:
             continue
         if tag not in ALLOWED:
             sys.exit(f"{id}: unsupported element <{tag}>")
-        attrs = " ".join(f'{camel(k)}="{v}"' for k, v in ATTR.findall(m.group(2)))
+        found = ATTR.findall(m.group(2))
+        # Anything left after stripping recognised attributes is unexpected.
+        if ATTR.sub("", m.group(2)).replace("/", "").strip():
+            sys.exit(f"{id}: unparseable attributes on <{tag}>")
+        for k, v in found:
+            if camel(k) not in CHILD_ATTRS:
+                sys.exit(f"{id}: disallowed attribute {k!r} on <{tag}>")
+            if re.search(r"[{}<>`]", v):
+                sys.exit(f"{id}: forbidden character in {k}={v!r}")
+        attrs = " ".join(f'{camel(k)}="{v}"' for k, v in found)
         children.append(f"      <{tag} {attrs} />")
     name = "Icon" + pascal(id.split(":", 1)[1])
     lines += ["", f"export function {name}(props: IconProps) {{", "  return (", "    <Svg {...props}>"]
