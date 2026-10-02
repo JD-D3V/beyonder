@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { IconLogIn, IconUser } from "../../components/icons";
 import { api } from "../../lib/api";
 import { setSession } from "../../lib/session";
 
@@ -73,7 +74,8 @@ export default function LoginPage() {
         {err && <div className="error">{err}</div>}
         <div className="row">
           <button type="submit" disabled={busy}>
-            {busy ? "Working..." : mode === "signin" ? "Sign in" : "Sign up"}
+            {mode === "signin" ? <IconLogIn /> : <IconUser />}{" "}
+            <span>{busy ? "Working..." : mode === "signin" ? "Sign in" : "Sign up"}</span>
           </button>
           <button
             type="button"

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../components/BookCover";
+import { IconArrowUpDown, IconChevronDown, IconSearch, IconSlidersHorizontal, IconUpload, IconX } from "../components/icons";
 import { api, Novel, NovelQuery } from "../lib/api";
 
 const PAGE_SIZE = 24;
@@ -141,13 +142,14 @@ function CatalogInner() {
           </div>
         </div>
         <Link href="/import">
-          <button>Import a book</button>
+          <button><IconUpload /> <span>Import a book</span></button>
         </Link>
       </div>
 
       {err && <div className="error">{err}</div>}
 
       <div className="toolbar">
+        <IconSearch />
         <input
           className="grow"
           type="search"
@@ -163,6 +165,7 @@ function CatalogInner() {
           aria-label="Tag"
           style={{ width: 120 }}
         />
+        <IconSlidersHorizontal />
         <select
           value={status}
           onChange={(e) => setParam({ status: e.target.value })}
@@ -184,6 +187,7 @@ function CatalogInner() {
             </option>
           ))}
         </select>
+        <IconArrowUpDown />
         <select
           value={sort}
           onChange={(e) =>
@@ -200,7 +204,7 @@ function CatalogInner() {
             className="secondary"
             onClick={() => router.replace(pathname)}
           >
-            Clear
+            <IconX /> <span>Clear</span>
           </button>
         )}
       </div>
@@ -220,7 +224,7 @@ function CatalogInner() {
                 from a URL.
               </p>
               <Link href="/import">
-                <button>Import your first book</button>
+                <button><IconUpload /> <span>Import your first book</span></button>
               </Link>
             </>
           )}
@@ -261,7 +265,7 @@ function CatalogInner() {
       {hasMore && !loading && (
         <div className="row" style={{ justifyContent: "center", marginTop: 20 }}>
           <button className="secondary" onClick={loadMore} disabled={loadingMore}>
-            {loadingMore ? "Loading..." : "Load more"}
+            {loadingMore ? "Loading..." : <><IconChevronDown /> <span>Load more</span></>}
           </button>
         </div>
       )}

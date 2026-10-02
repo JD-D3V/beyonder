@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { IconChevronLeft, IconFileText, IconLink, IconUpload } from "../../components/icons";
 import { api } from "../../lib/api";
 
 type Mode = "file" | "paste" | "url";
@@ -104,7 +105,7 @@ export default function ImportPage() {
           </div>
         </div>
         <Link href="/">
-          <button className="secondary">Back to library</button>
+          <button className="secondary"><IconChevronLeft /> <span>Back to library</span></button>
         </Link>
       </div>
 
@@ -113,19 +114,19 @@ export default function ImportPage() {
           className={`tab ${mode === "file" ? "active" : ""}`}
           onClick={() => setMode("file")}
         >
-          Upload a file
+          <IconUpload /> <span>Upload a file</span>
         </button>
         <button
           className={`tab ${mode === "paste" ? "active" : ""}`}
           onClick={() => setMode("paste")}
         >
-          Paste text
+          <IconFileText /> <span>Paste text</span>
         </button>
         <button
           className={`tab ${mode === "url" ? "active" : ""}`}
           onClick={() => setMode("url")}
         >
-          From URLs
+          <IconLink /> <span>From URLs</span>
         </button>
       </div>
 

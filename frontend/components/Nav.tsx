@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { IconLogIn, IconLogOut, IconSettings } from "./icons";
 import { clearSession, getSession, SESSION_EVENT, type Session } from "../lib/session";
 
 const LINKS = [
@@ -55,18 +56,18 @@ export default function Nav() {
           );
         })}
         <Link href="/settings" className={pathname.startsWith("/settings") ? "active" : ""}>
-          Settings
+          <IconSettings size={16} /> Settings
         </Link>
         {session ? (
           <>
             <span className="muted small">{session.user.email}</span>
             <a href="#" onClick={(e) => { e.preventDefault(); void signOut(); }}>
-              Sign out
+              <IconLogOut size={16} /> Sign out
             </a>
           </>
         ) : (
           <Link href="/login" className={pathname.startsWith("/login") ? "active" : ""}>
-            Sign in
+            <IconLogIn size={16} /> Sign in
           </Link>
         )}
       </div>

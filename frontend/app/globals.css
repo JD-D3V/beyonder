@@ -362,3 +362,8 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; }
 }
 .gate h2 { margin: 0; font-size: 18px; }
 .gate input { width: 100%; }
+
+/* Icons (frontend/components/icons.tsx) */
+.icon { vertical-align: -0.2em; flex-shrink: 0; }
+.btn .icon + span, button .icon + span { margin-left: 2px; }
+.toolbar > .icon { color: var(--muted); }

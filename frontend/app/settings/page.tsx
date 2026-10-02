@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { IconExternalLink, IconKeyRound } from "../../components/icons";
 import {
   clearLlmConfig,
   getLlmConfig,
@@ -88,7 +89,7 @@ export default function SettingsPage() {
       </div>
       {note && <div className="notice">{note}</div>}
       <div className="row">
-        <button onClick={save}>Save</button>
+        <button onClick={save}><IconKeyRound /> <span>Save</span></button>
         <button onClick={remove}>Remove key</button>
       </div>
 
@@ -97,7 +98,7 @@ export default function SettingsPage() {
         <li>
           Open{" "}
           <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
-            aistudio.google.com/apikey
+            aistudio.google.com/apikey <IconExternalLink size={14} />
           </a>{" "}
           and sign in with a Google account.
         </li>

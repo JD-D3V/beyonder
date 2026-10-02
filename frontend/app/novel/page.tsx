@@ -5,6 +5,18 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
 import {
+  IconBookOpen,
+  IconCheck,
+  IconFlag,
+  IconLanguages,
+  IconList,
+  IconLock,
+  IconLockOpen,
+  IconPencil,
+  IconSearch,
+  IconX,
+} from "../../components/icons";
+import {
   api,
   ChapterRow,
   CRITIC_MAX_CHARS,
@@ -434,10 +446,10 @@ function BookInner() {
                 </div>
                 <div className="row">
                   <button onClick={saveEdits} disabled={busy}>
-                    Save
+                    <IconCheck /> <span>Save</span>
                   </button>
                   <button className="secondary" onClick={() => setEditing(false)}>
-                    Cancel
+                    <IconX /> <span>Cancel</span>
                   </button>
                 </div>
               </>
@@ -492,22 +504,25 @@ function BookInner() {
                 <div className="row">
                   <Link href={`/reader?novel=${novel.id}&ch=${resumeAt}`}>
                     <button>
-                      {resumeAt > 0
-                        ? `Continue from chapter ${resumeAt + 1}`
-                        : "Start reading"}
+                      <IconBookOpen />{" "}
+                      <span>
+                        {resumeAt > 0
+                          ? `Continue from chapter ${resumeAt + 1}`
+                          : "Start reading"}
+                      </span>
                     </button>
                   </Link>
                   {untranslated > 0 && (
                     <>
                       <button onClick={() => translateSome(3)} disabled={running}>
-                        {running ? "Working..." : "Translate next 3"}
+                        <IconLanguages /> <span>{running ? "Working..." : "Translate next 3"}</span>
                       </button>
                       <button
                         className="secondary"
                         onClick={translateAll}
                         disabled={running}
                       >
-                        Translate all {untranslated}
+                        <IconLanguages /> <span>Translate all {untranslated}</span>
                       </button>
                     </>
                   )}
@@ -518,14 +533,14 @@ function BookInner() {
                         stopped.current = true;
                       }}
                     >
-                      Stop
+                      <IconX /> <span>Stop</span>
                     </button>
                   )}
                   <button className="secondary" onClick={embedAll} disabled={busy}>
-                    {busy ? "Working..." : "Index for search"}
+                    <IconSearch /> <span>{busy ? "Working..." : "Index for search"}</span>
                   </button>
                   <button className="secondary" onClick={() => setEditing(true)}>
-                    Edit details
+                    <IconPencil /> <span>Edit details</span>
                   </button>
                   <button className="secondary" onClick={remove} disabled={busy}>
                     Delete
@@ -548,15 +563,18 @@ function BookInner() {
             ["glossary", "Glossary"],
             ["flags", "Review flags"],
           ] as [Tab, string][]
-        ).map(([k, label]) => (
+        ).map(([k, label]) => {
+          const TabIcon = k === "chapters" ? IconList : k === "glossary" ? IconLanguages : IconFlag;
+          return (
           <button
             key={k}
             className={`tab ${tab === k ? "active" : ""}`}
             onClick={() => setTab(k)}
           >
-            {label}
+            <TabIcon /> <span>{label}</span>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {tab === "glossary" && (
@@ -598,7 +616,11 @@ function BookInner() {
                         ) : (
                           t.target_term
                         )}
-                        {t.locked && <span className="pill"> locked</span>}
+                        {t.locked && (
+                          <span className="pill">
+                            <IconLock size={12} /> locked
+                          </span>
+                        )}
                       </td>
                       <td>{t.kind}</td>
                       <td>{t.first_chapter + 1}</td>
@@ -617,13 +639,14 @@ function BookInner() {
                                   patchTerm(t, { target_term: (draft || "").trim() })
                                 }
                               >
-                                Save
+                                <IconCheck /> <span>Save</span>
                               </button>
                               <button
                                 className="secondary"
                                 onClick={() => patchTerm(t, { locked: !t.locked })}
                               >
-                                {t.locked ? "Unlock" : "Lock"}
+                                {t.locked ? <IconLockOpen /> : <IconLock />}{" "}
+                                <span>{t.locked ? "Unlock" : "Lock"}</span>
                               </button>
                             </div>
                           )}
@@ -680,7 +703,7 @@ function BookInner() {
                     />
                   )}
                   <button className="secondary" onClick={() => resolveFlag(f)}>
-                    Resolve
+                    <IconCheck /> <span>Resolve</span>
                   </button>
                 </div>
               )}
