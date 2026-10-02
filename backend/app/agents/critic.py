@@ -2,15 +2,16 @@
 
 Deterministic checks run first (glossary drift with an automatic fix for known
 variants, leftover CJK). One LLM pass then flags unknown names, pronouns and
-idioms. Nothing here ever triggers a retranslation, and an LLM failure just
-means fewer flags.
+idioms. Nothing here ever triggers a retranslation. An unexpected response
+shape just means fewer flags; an LLMError (bad key, rate limit, outage)
+propagates so the caller sees 400/429/502.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from ..common.logging import get_logger
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMError
 from ..review.checks import deterministic_flags
 from .prompts import CRITIC_SYSTEM, CRITIC_USER_TEMPLATE, CRITIC_VERSION
 
@@ -83,6 +84,8 @@ async def critique_translation(
             max_output_tokens=2048,
         )
         flags = flags + _clean_llm_flags(data)
+    except LLMError:
+        raise  # key/quota/outage surfaces as 400/429/502
     except Exception as e:  # noqa: BLE001 - QA must never block a translation
         log.warning("critic.fail", err=str(e), version=CRITIC_VERSION)
     return CritiqueResult(ok=not flags, flags=flags, fixed_text=fixed)

@@ -62,8 +62,8 @@ class StepResult:
     pieces_total: int
     complete: bool
     error: str | None = None
-    # A piece came back empty this call (model returned nothing, almost always a
-    # transient rate-limit/outage after its retries). No progress was made and
+    # A piece came back blank or garbled this call without an LLMError (key,
+    # rate-limit and outage errors raise instead). No progress was made and
     # nothing was corrupted; the caller should pause and retry the same piece.
     stalled: bool = False
     # Terms persisted this call (seed hits, plus any the model found per piece).
@@ -142,7 +142,7 @@ async def translate_step(
             upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text="",
                 model=llm.model_name, critic_passes=0, pieces_done=None,
-                translated_by=translated_by,
+                translated_by=translated_by, allow_empty=True,
             )
         return StepResult(chapter_idx, 0, 0, True)
 
@@ -180,6 +180,8 @@ async def translate_step(
     done = start
     t0 = time.monotonic()
     for i in range(start, total):
+        # LLMError (bad key, rate limit, outage) propagates: the route maps it
+        # to 400/429/502 instead of reporting a misleading stall.
         r = await translate_paragraph(
             pieces[i],
             glossary=glossary,
@@ -188,9 +190,9 @@ async def translate_step(
             client=llm,
         )
         if pieces[i].strip() and not r.translation.strip():
-            # generate() already retried this piece and still got nothing back —
-            # a transient rate-limit or model outage. Do NOT save or advance:
-            # completing now would bake a gap into the chapter permanently.
+            # A non-error but blank/garbled reply (errors raise above). Do NOT
+            # save or advance: completing now would bake a gap into the chapter
+            # permanently.
             # Stop; the next call retries this same piece after the caller pauses.
             log.warning(
                 "translate_step.piece_empty",

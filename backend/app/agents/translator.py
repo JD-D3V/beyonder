@@ -13,7 +13,7 @@ from typing import Iterable
 
 from ..common.logging import get_logger
 from ..common.textsplit import split_chunks
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMError
 from .prompts import TRANSLATOR_SYSTEM, TRANSLATOR_USER_TEMPLATE, TRANSLATOR_VERSION
 
 log = get_logger(__name__)
@@ -94,7 +94,11 @@ async def translate_paragraph(
             temperature=0.2,
             max_output_tokens=4096,
         )
-    except Exception as e:
+    except LLMError:
+        # Key, quota or outage: the caller must see it (400/429/502). Swallowing
+        # it here once stored blank "translations" in the shared library.
+        raise
+    except Exception as e:  # noqa: BLE001 - unexpected shape; caller decides
         log.warning("translator.fail", chapter_idx=chapter_idx, err=str(e))
         return TranslationResult(translation="", new_terms=[], used_terms=used)
 
@@ -148,6 +152,12 @@ async def translate_chapter(
             chapter_idx=chapter_idx,
             client=client,
         )
+        if p.strip() and not r.translation.strip():
+            # Never join blanks into a "complete" chapter.
+            raise LLMError(
+                "llm_upstream",
+                "the model returned an empty translation for part of the chapter",
+            )
         pieces.append(r.translation)
         all_new.extend(r.new_terms)
         all_used.extend(r.used_terms)

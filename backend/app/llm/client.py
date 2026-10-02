@@ -156,7 +156,12 @@ class LLMClient:
             cleaned = raw.strip().lstrip("`").rstrip("`")
             if cleaned.startswith("json"):
                 cleaned = cleaned[4:].strip()
-            return json.loads(cleaned)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                raise LLMError(
+                    "llm_upstream", f"{self.provider} returned malformed JSON"
+                ) from None
 
 
 def _key_id(api_key: str) -> str:

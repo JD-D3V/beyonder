@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..common.logging import get_logger
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMError
 from .prompts import RELATION_SYSTEM, RELATION_USER_TEMPLATE, RELATION_VERSION
 
 log = get_logger(__name__)
@@ -66,7 +66,9 @@ async def extract_relations_from_chapter(
             temperature=0.1,
             max_output_tokens=4096,
         )
-    except Exception as e:
+    except LLMError:
+        raise  # key/quota/outage surfaces as 400/429/502
+    except Exception as e:  # noqa: BLE001 - bad shape: no relations
         log.warning(
             "relation.fail",
             chapter_idx=chapter_idx,

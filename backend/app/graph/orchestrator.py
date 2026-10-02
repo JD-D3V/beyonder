@@ -20,7 +20,7 @@ from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import translate_chapter
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMError
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
@@ -196,6 +196,10 @@ async def node_relations(state: TranslateState, config: RunnableConfig) -> dict[
 async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error:
         return _skip(state)
+    if state.chapter_text.strip() and not state.translation.strip():
+        # Backstop: a blank result for a non-empty chapter is a model failure,
+        # never something to save (it would be served as "complete").
+        raise LLMError("llm_upstream", "the model returned an empty translation")
     wrote = True
     persisted: list[dict] = []
     with get_session() as s:

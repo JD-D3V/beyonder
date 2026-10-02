@@ -86,6 +86,7 @@ def upsert_translation(
     pieces_done: int | None = None,
     translated_by: int | None = None,
     overwrite: bool = False,
+    allow_empty: bool = False,
 ) -> bool:
     """Insert or replace the translation for (chapter, lang). True if it wrote.
 
@@ -98,7 +99,14 @@ def upsert_translation(
     chapter, or a stale partial, cannot clobber a finished translation. The
     existing row is locked (FOR UPDATE) while deciding, and a concurrent first
     insert is caught by the unique constraint, so the check and write are atomic.
+
+    A blank text is never stored as complete (``pieces_done`` None): that would
+    publish an empty chapter that non-admins can never replace. Only a chapter
+    whose source is itself empty may pass ``allow_empty=True``. Raises
+    ValueError otherwise.
     """
+    if pieces_done is None and not text.strip() and not allow_empty:
+        raise ValueError("refusing to store a blank translation as complete")
     existing = session.execute(
         select(Translation)
         .where(
@@ -142,6 +150,7 @@ def upsert_translation(
             session, chapter_id=chapter_id, target_lang=target_lang, text=text,
             model=model, critic_passes=critic_passes, pieces_done=pieces_done,
             translated_by=translated_by, overwrite=overwrite,
+            allow_empty=allow_empty,
         )
     return True
 

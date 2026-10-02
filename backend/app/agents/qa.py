@@ -63,16 +63,14 @@ async def answer_question(
         question=question,
         answer_lang=answer_lang,
     )
-    try:
-        text = await client.generate(
-            user,
-            system=QA_SYSTEM,
-            temperature=0.2,
-            max_output_tokens=2048,
-        )
-    except Exception as e:
-        log.warning("qa.fail", err=str(e), version=QA_VERSION)
-        text = "Sorry — I couldn't reach the model just now. Try again."
+    # LLMError propagates to the global handler (400/429/502) so the reader
+    # can tell a bad key from a rate limit.
+    text = await client.generate(
+        user,
+        system=QA_SYSTEM,
+        temperature=0.2,
+        max_output_tokens=2048,
+    )
 
     cits = sorted({h.chapter_idx for h in hits})
     return QAResult(answer=text, citations=cits, hits=hits)
