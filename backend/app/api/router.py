@@ -36,6 +36,7 @@ from ..agents.qa import answer_question
 from ..common.config import settings
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
+from ..llm.client import LLMClient
 from ..graph.orchestrator import run_translation_graph
 from ..graph.resumable import translate_step
 from ..ingest.epub_loader import load_epub
@@ -93,6 +94,13 @@ log = get_logger(__name__)
 router = APIRouter()
 
 
+def _server_llm() -> LLMClient:
+    # Temporary: Task 5 replaces this with per-user resolve_llm.
+    if not settings.gemini_api_key:
+        raise HTTPException(503, "no LLM API key configured")
+    return LLMClient("gemini", settings.gemini_api_key)
+
+
 @router.get("/health")
 async def health() -> dict:
     """Liveness, plus enough to tell which build and config are actually live.
@@ -105,7 +113,7 @@ async def health() -> dict:
         "ok": True,
         "commit": commit[:7] if commit else "dev",
         "model": settings.gemini_model,
-        "embed_model": settings.gemini_embed_model,
+        "embed_model": settings.embed_model_name,
     }
 
 
@@ -418,6 +426,7 @@ async def translate(body: TranslateIn) -> TranslateResult:
         title = novel.title
         src_lang = novel.source_lang
     state = await run_translation_graph(
+        llm=_server_llm(),
         novel_id=body.novel_id,
         novel_title=title,
         source_lang=src_lang,
@@ -462,6 +471,7 @@ async def translate_batch(body: TranslateBatchIn) -> TranslateBatchResult:
     if not pending:
         return TranslateBatchResult(translated=[], remaining=0, done=True)
 
+    llm = _server_llm()
     batch = pending[: body.limit]
     translated: list[int] = []
     error: str | None = None
@@ -469,6 +479,7 @@ async def translate_batch(body: TranslateBatchIn) -> TranslateBatchResult:
     for idx in batch:
         try:
             state = await run_translation_graph(
+                llm=llm,
                 novel_id=body.novel_id,
                 novel_title=title,
                 source_lang=src_lang,
@@ -512,6 +523,7 @@ async def translate_step_route(body: TranslateStepIn) -> TranslateStepResult:
         if get_novel(s, body.novel_id) is None:
             raise HTTPException(404, "novel not found")
     res = await translate_step(
+        llm=_server_llm(),
         novel_id=body.novel_id,
         chapter_idx=body.chapter_idx,
         target_lang=body.target_lang,
@@ -535,6 +547,7 @@ async def ask(body: AskIn) -> AskOut:
             raise HTTPException(404, "novel not found")
         title = novel.title
     res = await answer_question(
+        client=_server_llm(),
         question=body.question,
         novel_id=body.novel_id,
         novel_title=title,

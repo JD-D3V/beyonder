@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..common.logging import get_logger
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient
 from .prompts import RELATION_SYSTEM, RELATION_USER_TEMPLATE, RELATION_VERSION
 
 log = get_logger(__name__)
@@ -46,7 +46,7 @@ async def extract_relations_from_chapter(
     chapter_idx: int,
     chapter_text: str,
     entities: Iterable[str],
-    client: GeminiClient | None = None,
+    client: LLMClient,
     max_chars: int = 12000,
 ) -> list[dict]:
     if not chapter_text.strip():
@@ -58,9 +58,8 @@ async def extract_relations_from_chapter(
         entities_block=_format_entities(entities),
         chapter_text=body,
     )
-    g = client or get_gemini()
     try:
-        data = await g.generate_json(
+        data = await client.generate_json(
             user,
             system=RELATION_SYSTEM,
             schema=_REL_SCHEMA,

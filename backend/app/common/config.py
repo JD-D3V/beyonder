@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
-    gemini_embed_model: str = "gemini-embedding-001"
     gemini_rpm_limit: int = 15
     gemini_concurrency: int = 3
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..common.logging import get_logger
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient
 from .prompts import CRITIC_SYSTEM, CRITIC_USER_TEMPLATE, CRITIC_VERSION
 
 log = get_logger(__name__)
@@ -69,7 +69,7 @@ async def critique_translation(
     source: str,
     candidate: str,
     glossary: list[tuple[str, str]],
-    client: GeminiClient | None = None,
+    client: LLMClient,
     use_llm_fix: bool = True,
 ) -> CritiqueResult:
     if not candidate.strip():
@@ -89,9 +89,8 @@ async def critique_translation(
         source=source,
         candidate=candidate,
     )
-    g = client or get_gemini()
     try:
-        data = await g.generate_json(
+        data = await client.generate_json(
             user,
             system=CRITIC_SYSTEM,
             schema=_CRITIC_SCHEMA,

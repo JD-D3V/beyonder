@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
             model=settings.gemini_model,
             cors=settings.cors_origin_list,
             private=settings.is_private,
-            embed_model=settings.gemini_embed_model,
+            embed_model=settings.embed_model_name,
             db=settings.database_url.split("@")[-1],
             qdrant=settings.qdrant_url,
         )

@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from app.agents.qa import answer_question  # noqa: E402
 from app.agents.translator import translate_chapter  # noqa: E402
 from app.common.config import settings  # noqa: E402
+from app.llm.client import LLMClient  # noqa: E402
 from app.common.logging import get_logger  # noqa: E402
 from app.storage.db import get_session, init_engine  # noqa: E402
 from app.storage.repository import (  # noqa: E402
@@ -73,6 +74,10 @@ def _resolve_novel_id(slug: str) -> int | None:
     return None
 
 
+def _llm() -> LLMClient:
+    return LLMClient("gemini", settings.gemini_api_key)
+
+
 async def run_qa() -> dict[str, Any]:
     rows_in = _load_jsonl(GOLD_DIR / "qa.jsonl")
     if not rows_in:
@@ -89,6 +94,7 @@ async def run_qa() -> dict[str, Any]:
             novel = get_novel(s, novel_id)
             title = novel.title if novel else "Unknown"
         res = await answer_question(
+            client=_llm(),
             question=row["question"],
             novel_id=novel_id,
             novel_title=title,
@@ -178,6 +184,7 @@ async def run_translate() -> dict[str, Any]:
     for chap in chaps:
         r = await translate_chapter(
             chap.source_text,
+            client=_llm(),
             glossary=list(glossary),
             target_lang="en",
             chapter_idx=chap.idx,

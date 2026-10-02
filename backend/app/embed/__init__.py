@@ -1,4 +1,3 @@
-from .gemini import GeminiClient, get_gemini
 from .qdrant import (
     QdrantStore,
     ensure_collection,
@@ -8,10 +7,8 @@ from .qdrant import (
 )
 
 __all__ = [
-    "GeminiClient",
     "QdrantStore",
     "ensure_collection",
-    "get_gemini",
     "get_qdrant",
     "search_chunks",
     "upsert_chunks",

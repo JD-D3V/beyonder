@@ -13,7 +13,7 @@ from typing import Iterable
 
 from ..common.logging import get_logger
 from ..common.textsplit import split_chunks
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient
 from .prompts import TRANSLATOR_SYSTEM, TRANSLATOR_USER_TEMPLATE, TRANSLATOR_VERSION
 
 log = get_logger(__name__)
@@ -73,7 +73,7 @@ async def translate_paragraph(
     glossary: list[tuple[str, str]],
     target_lang: str,
     chapter_idx: int,
-    client: GeminiClient | None = None,
+    client: LLMClient,
 ) -> TranslationResult:
     if not paragraph.strip():
         return TranslationResult(translation="", new_terms=[], used_terms=[])
@@ -86,9 +86,8 @@ async def translate_paragraph(
         glossary_block=block,
         paragraph=paragraph,
     )
-    g = client or get_gemini()
     try:
-        data = await g.generate_json(
+        data = await client.generate_json(
             user,
             system=TRANSLATOR_SYSTEM,
             schema=_TRANSLATE_SCHEMA,
@@ -132,7 +131,7 @@ async def translate_chapter(
     glossary: list[tuple[str, str]],
     target_lang: str,
     chapter_idx: int,
-    client: GeminiClient | None = None,
+    client: LLMClient,
 ) -> TranslationResult:
     paras = split_paragraphs(chapter_text)
     if not paras:

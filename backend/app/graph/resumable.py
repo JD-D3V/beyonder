@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import split_paragraphs, translate_paragraph
 from ..common.logging import get_logger
-from ..embed.gemini import get_gemini
+from ..llm.client import LLMClient
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
@@ -85,6 +85,7 @@ def plan_resume(
 
 async def translate_step(
     *,
+    llm: LLMClient,
     novel_id: int,
     chapter_idx: int,
     target_lang: str = "en",
@@ -112,14 +113,13 @@ async def translate_step(
 
     pieces = split_paragraphs(source)
     total = len(pieces)
-    gm = get_gemini()
 
     # Empty chapter: record a complete empty translation so the UI stops asking.
     if total == 0:
         with get_session() as s:
             upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text="",
-                model=gm.model_name, critic_passes=0, pieces_done=None,
+                model=llm.model_name, critic_passes=0, pieces_done=None,
             )
         return StepResult(chapter_idx, 0, 0, True)
 
@@ -142,7 +142,7 @@ async def translate_step(
             glossary=glossary,
             target_lang=target_lang,
             chapter_idx=chapter_idx,
-            client=gm,
+            client=llm,
         )
         if pieces[i].strip() and not r.translation.strip():
             # generate() already retried this piece and still got nothing back —
@@ -171,7 +171,7 @@ async def translate_step(
                 )
             upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text=acc,
-                model=gm.model_name, critic_passes=0,
+                model=llm.model_name, critic_passes=0,
                 pieces_done=(None if done == total else done),
             )
         if done < total and (time.monotonic() - t0) >= time_budget_s:
@@ -188,6 +188,7 @@ async def translate_step(
                 chapter_idx=chapter_idx,
                 chapter_text=source,
                 entities=entities,
+                client=llm,
             )
             if rels:
                 with get_session() as s:

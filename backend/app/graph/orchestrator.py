@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langgraph.graph import END, StateGraph
+from langchain_core.runnables import RunnableConfig
 
 from ..agents.critic import critique_translation
 from ..agents.extractor import extract_terms_from_chapter
@@ -20,7 +21,7 @@ from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import translate_chapter
 from ..common.config import settings
 from ..common.logging import get_logger
-from ..embed.gemini import get_gemini
+from ..llm.client import LLMClient
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
@@ -56,6 +57,10 @@ class TranslateState:
 
 # --- nodes ---------------------------------------------------------------
 
+def _llm(config: RunnableConfig) -> LLMClient:
+    return config["configurable"]["llm"]
+
+
 def _skip(state: TranslateState) -> dict[str, Any]:
     """A node that has nothing to do still has to write something.
 
@@ -86,10 +91,11 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
     }
 
 
-async def node_extract(state: TranslateState) -> dict[str, Any]:
+async def node_extract(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     new_terms = await extract_terms_from_chapter(
+        client=_llm(config),
         novel_title=state.novel_title,
         source_lang=state.source_lang,
         chapter_idx=state.chapter_idx,
@@ -105,11 +111,12 @@ async def node_extract(state: TranslateState) -> dict[str, Any]:
     return {"new_terms": new_terms, "glossary": merged}
 
 
-async def node_translate(state: TranslateState) -> dict[str, Any]:
+async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     result = await translate_chapter(
         state.chapter_text,
+        client=_llm(config),
         glossary=list(state.glossary),
         target_lang=state.target_lang,
         chapter_idx=state.chapter_idx,
@@ -127,10 +134,11 @@ async def node_translate(state: TranslateState) -> dict[str, Any]:
     }
 
 
-async def node_critic(state: TranslateState) -> dict[str, Any]:
+async def node_critic(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.translation:
         return _skip(state)
     res = await critique_translation(
+        client=_llm(config),
         source=state.chapter_text,
         candidate=state.translation,
         glossary=list(state.glossary),
@@ -146,11 +154,12 @@ async def node_critic(state: TranslateState) -> dict[str, Any]:
     return out
 
 
-async def node_relations(state: TranslateState) -> dict[str, Any]:
+async def node_relations(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     entities = [s for s, _ in state.glossary]
     rels = await extract_relations_from_chapter(
+        client=_llm(config),
         novel_title=state.novel_title,
         chapter_idx=state.chapter_idx,
         chapter_text=state.chapter_text,
@@ -159,7 +168,7 @@ async def node_relations(state: TranslateState) -> dict[str, Any]:
     return {"relations": rels}
 
 
-async def node_persist(state: TranslateState) -> dict[str, Any]:
+async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error:
         return _skip(state)
     with get_session() as s:
@@ -179,7 +188,7 @@ async def node_persist(state: TranslateState) -> dict[str, Any]:
                 chapter_id=state.chapter_db_id,
                 target_lang=state.target_lang,
                 text=state.translation,
-                model=get_gemini().model_name,
+                model=_llm(config).model_name,
                 critic_passes=state.critic_passes,
             )
     log.info(
@@ -224,6 +233,7 @@ def build_translation_graph():
 
 async def run_translation_graph(
     *,
+    llm: LLMClient,
     novel_id: int,
     novel_title: str,
     source_lang: str,
@@ -238,7 +248,7 @@ async def run_translation_graph(
         target_lang=target_lang,
         chapter_idx=chapter_idx,
     )
-    final = await graph.ainvoke(init)
+    final = await graph.ainvoke(init, config={"configurable": {"llm": llm}})
     # LangGraph returns a dict-like snapshot; merge it back into a dataclass.
     if isinstance(final, dict):
         out = TranslateState(

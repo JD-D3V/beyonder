@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..common.logging import get_logger
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient
 from ..embed.pipeline import embed_query
 from ..embed.qdrant import SearchHit, search_chunks
 from .prompts import QA_SYSTEM, QA_USER_TEMPLATE, QA_VERSION
@@ -37,7 +37,7 @@ async def answer_question(
     current_chapter: int,
     answer_lang: str = "en",
     top_k: int = 8,
-    client: GeminiClient | None = None,
+    client: LLMClient,
 ) -> QAResult:
     qvec = await embed_query(question)
     hits = search_chunks(
@@ -63,9 +63,8 @@ async def answer_question(
         question=question,
         answer_lang=answer_lang,
     )
-    g = client or get_gemini()
     try:
-        text = await g.generate(
+        text = await client.generate(
             user,
             system=QA_SYSTEM,
             temperature=0.2,
