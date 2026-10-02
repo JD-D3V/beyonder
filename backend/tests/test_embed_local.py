@@ -14,10 +14,17 @@ async def test_pipeline_uses_local_embedder(monkeypatch):
 
 @pytest.mark.slow
 def test_embed_texts_real_model():
-    a, b = local.embed_texts(
-        ["The hero draws his sword.", "The hero draws his sword!"]
+    en, zh, other = local.embed_texts(
+        [
+            "The hero draws his sword and charges at the dragon.",
+            "英雄拔出剑，向巨龙冲去。",
+            "The bakery sells fresh bread every morning.",
+        ]
     )
-    assert len(a) == 384
-    dot = sum(x * y for x, y in zip(a, b))
-    cos = dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
-    assert cos > 0.8
+    assert len(en) == 384
+
+    def cos(a, b):
+        dot = sum(x * y for x, y in zip(a, b))
+        return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
+
+    assert cos(en, zh) > cos(en, other)

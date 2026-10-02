@@ -2,9 +2,10 @@
 
     python -m app.scripts.reembed [--novel ID]
 
-With --novel, only that novel is re-embedded (collection is kept if its
-dimension already matches). Without it, the collection is recreated and every
-novel is re-embedded.
+The collection is recreated whenever its dimension is wrong. Without --novel
+it is always recreated and every novel is re-embedded; with --novel only that
+novel is re-embedded (other novels' vectors are dropped if the dim changed,
+so rerun without --novel to restore them).
 """
 from __future__ import annotations
 
@@ -22,11 +23,11 @@ from ..storage.models import Chapter, Novel
 
 async def _run(novel_id: int | None) -> None:
     store = get_qdrant()
-    if novel_id is None:
-        try:
+    if novel_id is None or store.existing_dim() not in (None, settings.embedding_dim):
+        # collection_exists never raises for "not found"; real errors propagate.
+        if store.client.collection_exists(store.collection):
             store.client.delete_collection(store.collection)
-        except Exception:
-            pass
+    store.ensure(settings.embedding_dim)
     with get_session() as db:
         q = select(Novel.id)
         if novel_id is not None:

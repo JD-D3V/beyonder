@@ -38,17 +38,37 @@ class SearchHit:
     text: str
 
 
+class CollectionDimensionError(RuntimeError):
+    """Existing collection's vector size differs from the configured one."""
+
+
 class QdrantStore:
     def __init__(self, client: QdrantClient, collection: str) -> None:
         self.client = client
         self.collection = collection
 
+    def existing_dim(self) -> int | None:
+        """Vector size of the collection, or None if it does not exist."""
+        if not self.client.collection_exists(self.collection):
+            return None
+        vectors = self.client.get_collection(self.collection).config.params.vectors
+        if isinstance(vectors, dict):  # named vectors: use the only/first one
+            vectors = next(iter(vectors.values()))
+        return int(vectors.size)
+
     def ensure(self, dim: int) -> None:
-        try:
-            self.client.get_collection(self.collection)
+        existing = self.existing_dim()
+        if existing is not None:
+            if existing != dim:
+                raise CollectionDimensionError(
+                    f"Qdrant collection '{self.collection}' has dimension "
+                    f"{existing} but the embedding model produces {dim}. "
+                    "Run `python -m app.scripts.reembed` to rebuild it."
+                )
             return
-        except Exception:
-            pass
+        self.recreate(dim)
+
+    def recreate(self, dim: int) -> None:
         log.info("qdrant.create_collection", name=self.collection, dim=dim)
         self.client.recreate_collection(
             collection_name=self.collection,
