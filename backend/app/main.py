@@ -26,7 +26,7 @@ _LLM_STATUS = {"llm_key_invalid": 400, "llm_rate_limited": 429, "llm_upstream": 
 async def llm_error_handler(request: Request, exc: LLMError) -> JSONResponse:
     return JSONResponse(
         status_code=_LLM_STATUS.get(exc.code, 502),
-        content={"detail": str(exc), "code": exc.code},
+        content={"detail": {"code": exc.code, "detail": str(exc)}},
     )
 
 

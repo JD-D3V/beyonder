@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..common.config import settings
@@ -82,39 +83,65 @@ def upsert_translation(
     critic_passes: int,
     pieces_done: int | None = None,
     translated_by: int | None = None,
-) -> Translation:
-    """Insert or replace the translation for (chapter, lang).
+    overwrite: bool = False,
+) -> bool:
+    """Insert or replace the translation for (chapter, lang). True if it wrote.
 
     ``pieces_done`` is the resumable-progress marker: leave it None to mark the
     row complete (single-pass results and finished step runs), or pass the count
     of pieces done so far to store a partial the next step call resumes from.
+
+    Unless ``overwrite`` is set, a row that is already complete (``pieces_done``
+    is NULL and text non-empty) is never replaced: two requests racing on one
+    chapter, or a stale partial, cannot clobber a finished translation. The
+    existing row is locked (FOR UPDATE) while deciding, and a concurrent first
+    insert is caught by the unique constraint, so the check and write are atomic.
     """
     existing = session.execute(
-        select(Translation).where(
+        select(Translation)
+        .where(
             Translation.chapter_id == chapter_id,
             Translation.target_lang == target_lang,
         )
+        .with_for_update()
     ).scalar_one_or_none()
     if existing is not None:
+        if (
+            not overwrite
+            and existing.pieces_done is None
+            and bool(existing.text)
+        ):
+            return False
         existing.text = text
         existing.model = model
         existing.critic_passes = critic_passes
         existing.pieces_done = pieces_done
         if translated_by is not None:
             existing.translated_by = translated_by
-        return existing
-    tr = Translation(
-        chapter_id=chapter_id,
-        target_lang=target_lang,
-        text=text,
-        model=model,
-        critic_passes=critic_passes,
-        pieces_done=pieces_done,
-        translated_by=translated_by,
-    )
-    session.add(tr)
-    session.flush()
-    return tr
+        session.flush()
+        return True
+    try:
+        with session.begin_nested():
+            session.add(
+                Translation(
+                    chapter_id=chapter_id,
+                    target_lang=target_lang,
+                    text=text,
+                    model=model,
+                    critic_passes=critic_passes,
+                    pieces_done=pieces_done,
+                    translated_by=translated_by,
+                )
+            )
+    except IntegrityError:
+        # Someone inserted first. Retry once against their row (a partial of
+        # theirs may still be replaced by us; a complete one will not be).
+        return upsert_translation(
+            session, chapter_id=chapter_id, target_lang=target_lang, text=text,
+            model=model, critic_passes=critic_passes, pieces_done=pieces_done,
+            translated_by=translated_by, overwrite=overwrite,
+        )
+    return True
 
 
 def reset_translation(session: Session, *, chapter_id: int, target_lang: str) -> None:

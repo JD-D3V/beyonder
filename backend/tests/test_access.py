@@ -191,7 +191,7 @@ def test_llm_error_maps_to_status(client, monkeypatch):
             "/translate", json={"novel_id": 1, "chapter_idx": 0}, headers=KEY
         )
         assert r.status_code == status
-        assert r.json()["code"] == code and r.json()["detail"] == "nope"
+        assert r.json() == {"detail": {"code": code, "detail": "nope"}}
 
 
 def test_glossary_defaults_to_progress_when_signed_in(client, monkeypatch):
@@ -209,3 +209,40 @@ def test_glossary_defaults_to_progress_when_signed_in(client, monkeypatch):
     assert seen["up_to"] == 4
     client.get("/novels/1/glossary?up_to=9")
     assert seen["up_to"] == 9
+
+
+def test_translate_returns_stored_text_when_race_lost(client, monkeypatch):
+    from app.graph.orchestrator import TranslateState
+
+    _stub_sessions(monkeypatch)
+    _as(_User())
+    monkeypatch.setattr("app.api.translate.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr(
+        "app.api.translate.get_chapter_by_idx",
+        lambda s, nid, idx: SimpleNamespace(id=5, idx=idx),
+    )
+    calls = []
+
+    def tr(s, chapter_id, target_lang="en"):
+        calls.append(1)
+        if len(calls) == 1:  # complete check before the run: nothing yet
+            return None
+        return SimpleNamespace(text="theirs", critic_passes=2, pieces_done=None)
+
+    monkeypatch.setattr("app.api.translate.get_translation", tr)
+    seen = {}
+
+    async def graph(**kw):
+        seen.update(kw)
+        st = TranslateState(
+            novel_id=1, novel_title="T", source_lang="zh", target_lang="en",
+            chapter_idx=0,
+        )
+        st.translation = "mine"
+        st.lost_race = True
+        return st
+
+    monkeypatch.setattr("app.api.translate.run_translation_graph", graph)
+    r = client.post("/translate", json={"novel_id": 1, "chapter_idx": 0}, headers=KEY)
+    assert r.status_code == 200 and r.json()["translation"] == "theirs"
+    assert seen["overwrite"] is False

@@ -74,9 +74,23 @@ async def translate(
         target_lang=body.target_lang,
         chapter_idx=body.chapter_idx,
         translated_by=user.id,
+        overwrite=bool(user.is_admin and body.force),
     )
     if state.error:
         raise HTTPException(400, state.error)
+    if state.lost_race:
+        # Someone finished this chapter while we worked; serve what is stored.
+        with get_session() as s:
+            _, stored = _complete_translation(
+                s, body.novel_id, body.chapter_idx, body.target_lang
+            )
+        if stored is not None:
+            return TranslateResult(
+                chapter_idx=body.chapter_idx,
+                translation=stored.text,
+                new_terms=0,
+                critic_passes=stored.critic_passes,
+            )
     return TranslateResult(
         chapter_idx=body.chapter_idx,
         translation=state.translation,

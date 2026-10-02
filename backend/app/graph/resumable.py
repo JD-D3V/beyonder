@@ -171,12 +171,16 @@ async def translate_step(
                 upsert_terms(
                     s, novel_id=novel_id, entries=r.new_terms, target_lang=target_lang
                 )
-            upsert_translation(
+            wrote = upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text=acc,
                 model=llm.model_name, critic_passes=0,
                 pieces_done=(None if done == total else done),
                 translated_by=translated_by,
             )
+        if wrote is False:
+            # A complete translation landed meanwhile (another request); our
+            # write was refused so it is not clobbered. Nothing more to do.
+            return StepResult(chapter_idx, total, total, True)
         if done < total and (time.monotonic() - t0) >= time_budget_s:
             break
 

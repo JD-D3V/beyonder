@@ -53,6 +53,8 @@ class TranslateState:
     retries_left: int = settings.critic_max_retries
     done: bool = False
     error: str | None = None
+    # Set when a complete translation appeared meanwhile and we did not overwrite.
+    lost_race: bool = False
 
 
 # --- nodes ---------------------------------------------------------------
@@ -171,6 +173,7 @@ async def node_relations(state: TranslateState, config: RunnableConfig) -> dict[
 async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error:
         return _skip(state)
+    wrote = True
     with get_session() as s:
         if state.new_terms:
             # Re-fetch fresh: assign embeddings via separate flow if needed
@@ -183,7 +186,7 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
         if state.relations:
             insert_relations(s, novel_id=state.novel_id, entries=state.relations)
         if state.translation and state.chapter_db_id is not None:
-            upsert_translation(
+            wrote = upsert_translation(
                 s,
                 chapter_id=state.chapter_db_id,
                 target_lang=state.target_lang,
@@ -191,6 +194,7 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
                 model=_llm(config).model_name,
                 critic_passes=state.critic_passes,
                 translated_by=config["configurable"].get("translated_by"),
+                overwrite=bool(config["configurable"].get("overwrite", False)),
             )
     log.info(
         "graph.persist",
@@ -200,7 +204,7 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
         new_terms=len(state.new_terms),
         relations=len(state.relations),
     )
-    return {"done": True}
+    return {"done": True, "lost_race": wrote is False}
 
 
 # --- graph ---------------------------------------------------------------
@@ -241,6 +245,7 @@ async def run_translation_graph(
     target_lang: str,
     chapter_idx: int,
     translated_by: int | None = None,
+    overwrite: bool = False,
 ) -> TranslateState:
     graph = build_translation_graph()
     init = TranslateState(
@@ -250,7 +255,7 @@ async def run_translation_graph(
         target_lang=target_lang,
         chapter_idx=chapter_idx,
     )
-    final = await graph.ainvoke(init, config={"configurable": {"llm": llm, "translated_by": translated_by}})
+    final = await graph.ainvoke(init, config={"configurable": {"llm": llm, "translated_by": translated_by, "overwrite": overwrite}})
     # LangGraph returns a dict-like snapshot; merge it back into a dataclass.
     if isinstance(final, dict):
         out = TranslateState(

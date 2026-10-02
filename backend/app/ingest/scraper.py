@@ -16,7 +16,10 @@ Use for personal eval only. Don't redistribute scraped novels.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 from dataclasses import dataclass
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -73,26 +76,94 @@ async def _extract(html: str) -> tuple[str | None, str]:
     return title, body_text
 
 
+class UnsafeURL(ValueError):
+    """The URL points somewhere a user-supplied scrape must never reach."""
+
+
+_MAX_REDIRECTS = 5
+
+
+def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_global
+        and not ip.is_private
+        and not ip.is_loopback
+        and not ip.is_link_local
+        and not ip.is_reserved
+        and not ip.is_multicast
+        and not ip.is_unspecified
+    )
+
+
+async def assert_public_url(url: str) -> None:
+    """Reject non-http(s) URLs and hosts that resolve to non-public addresses.
+
+    Every resolved address must be public. (A DNS answer can still change
+    between this check and the fetch; this blocks the direct cases, not a
+    rebinding attacker with control of a nameserver.)
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise UnsafeURL(f"unsupported scheme: {parts.scheme or '(none)'}")
+    host = parts.hostname
+    if not host:
+        raise UnsafeURL("missing host")
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = await asyncio.to_thread(
+                socket.getaddrinfo, host, parts.port or None, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror as e:
+            raise UnsafeURL(f"cannot resolve host: {host}") from e
+        addrs = [ipaddress.ip_address(i[4][0].split("%")[0]) for i in infos]
+    if not addrs or not all(_ip_is_public(a) for a in addrs):
+        raise UnsafeURL("address is not publicly routable")
+
+
 async def _fetch_http(url: str) -> str:
     async with httpx.AsyncClient(
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=_TIMEOUT_MS / 1000,
         headers={"user-agent": _USER_AGENT},
     ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        # Novel mirrors mislabel charsets constantly; let httpx guess from the
-        # bytes rather than trusting a bogus header.
-        return resp.text
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            await assert_public_url(current)
+            resp = await client.get(current)
+            if resp.is_redirect and resp.headers.get("location"):
+                current = urljoin(current, resp.headers["location"])
+                continue
+            resp.raise_for_status()
+            # Novel mirrors mislabel charsets constantly; let httpx guess from
+            # the bytes rather than trusting a bogus header.
+            return resp.text
+        raise UnsafeURL("too many redirects")
 
 
 async def _fetch_playwright(url: str) -> str:
     from playwright.async_api import async_playwright  # imported lazily
 
+    await assert_public_url(url)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         try:
             ctx = await browser.new_context(user_agent=_USER_AGENT)
+            async def _guard(route):
+                req = route.request
+                if req.is_navigation_request():
+                    try:
+                        await assert_public_url(req.url)
+                    except UnsafeURL:
+                        await route.abort()
+                        return
+                await route.continue_()
+
+            await ctx.route("**/*", _guard)
             page = await ctx.new_page()
             try:
                 await page.goto(url, timeout=_TIMEOUT_MS, wait_until="domcontentloaded")
@@ -117,6 +188,8 @@ async def _fetch(url: str) -> str:
 
     try:
         return await _fetch_playwright(url)
+    except UnsafeURL:
+        raise
     except Exception as e:
         log.warning("scrape.playwright_unavailable", url=url, err=str(e))
         return await _fetch_http(url)
