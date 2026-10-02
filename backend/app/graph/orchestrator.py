@@ -28,6 +28,7 @@ from ..storage.repository import (
     get_chapter_by_idx,
     get_terms_for_chapters,
     insert_relations,
+    insert_seed_terms,
     term_dicts,
     upsert_terms,
     upsert_translation,
@@ -107,6 +108,7 @@ async def node_seed(state: TranslateState, config: RunnableConfig) -> dict[str, 
     for h in hits:
         h["first_chapter"] = state.chapter_idx
         h["added_by"] = added_by
+        h["_seed"] = True
     merged = list(state.glossary) + [
         (h["source_term"], h["target_term"]) for h in hits
     ]
@@ -200,13 +202,21 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
             added_by = config["configurable"].get("translated_by")
             for t in state.new_terms:
                 t.setdefault("added_by", added_by)
-            rows = upsert_terms(
-                s,
-                novel_id=state.novel_id,
-                entries=state.new_terms,
-                target_lang=state.target_lang,
-            )
-            persisted = term_dicts(rows)
+            seed_hits = [t for t in state.new_terms if t.get("_seed")]
+            others = [t for t in state.new_terms if not t.get("_seed")]
+            created: list = []
+            if seed_hits:
+                # Seed hits only fill gaps; they never modify an existing row.
+                created += insert_seed_terms(
+                    s, novel_id=state.novel_id, entries=seed_hits,
+                    target_lang=state.target_lang,
+                )
+            if others:
+                upsert_terms(
+                    s, novel_id=state.novel_id, entries=others,
+                    target_lang=state.target_lang, created_out=created,
+                )
+            persisted = term_dicts(created)
         if state.relations:
             insert_relations(s, novel_id=state.novel_id, entries=state.relations)
         if state.translation and state.chapter_db_id is not None:
@@ -229,7 +239,8 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
         relations=len(state.relations),
     )
     out: dict[str, Any] = {"done": True, "lost_race": wrote is False}
-    if persisted:
+    if state.new_terms:
+        # Report only rows created by this call (they carry ids).
         out["new_terms"] = persisted
     return out
 

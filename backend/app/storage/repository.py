@@ -163,8 +163,12 @@ def upsert_terms(
     novel_id: int,
     entries: Iterable[dict],
     target_lang: str = "en",
+    created_out: list[Term] | None = None,
 ) -> list[Term]:
-    """Insert or update terms. Higher-confidence wins; locked rows never change."""
+    """Insert or update terms. Higher-confidence wins; locked rows never change.
+
+    Rows created by this call are also appended to ``created_out`` if given.
+    """
     out: list[Term] = []
     for e in entries:
         src = e["source_term"].strip()
@@ -200,6 +204,8 @@ def upsert_terms(
             )
             session.add(t)
             out.append(t)
+            if created_out is not None:
+                created_out.append(t)
         elif existing.locked:
             # Admin-curated: leave the rendering alone.
             out.append(existing)
@@ -213,6 +219,52 @@ def upsert_terms(
                     existing.embedding = embedding
             existing.first_chapter = min(existing.first_chapter, first_chapter)
             out.append(existing)
+    session.flush()
+    return out
+
+
+def insert_seed_terms(
+    session: Session,
+    *,
+    novel_id: int,
+    entries: Iterable[dict],
+    target_lang: str = "en",
+) -> list[Term]:
+    """Insert seed terms whose source is missing; never touch an existing row.
+
+    Returns only the rows created. A row that already exists for this novel and
+    language (any chapter, locked or not) is left exactly as it is.
+    """
+    out: list[Term] = []
+    seen: set[str] = set()
+    for e in entries:
+        src = e["source_term"].strip()
+        tgt = e["target_term"].strip()
+        if not src or not tgt or src in seen:
+            continue
+        seen.add(src)
+        exists = session.execute(
+            select(Term.id).where(
+                Term.novel_id == novel_id,
+                Term.source_term == src,
+                Term.target_lang == target_lang,
+            )
+        ).first()
+        if exists is not None:
+            continue
+        t = Term(
+            novel_id=novel_id,
+            source_term=src,
+            target_term=tgt,
+            target_lang=target_lang,
+            kind=e.get("kind", "other"),
+            first_chapter=int(e.get("first_chapter", 0)),
+            confidence=float(e.get("confidence", 0.9)),
+            notes=e.get("notes"),
+            added_by=e.get("added_by"),
+        )
+        session.add(t)
+        out.append(t)
     session.flush()
     return out
 

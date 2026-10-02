@@ -246,3 +246,40 @@ def test_translate_returns_stored_text_when_race_lost(client, monkeypatch):
     r = client.post("/translate", json={"novel_id": 1, "chapter_idx": 0}, headers=KEY)
     assert r.status_code == 200 and r.json()["translation"] == "theirs"
     assert seen["overwrite"] is False
+
+
+def test_glossary_patch_blank_target_422(client, monkeypatch):
+    _as(_User(admin=True))
+    _stub_sessions(monkeypatch)
+    r = client.patch("/novels/1/glossary/3", json={"target_term": "   "})
+    assert r.status_code == 422
+
+
+def test_glossary_patch_unknown_or_cross_novel_404(client, monkeypatch):
+    _as(_User(admin=True))
+    _stub_sessions(monkeypatch)
+    monkeypatch.setattr("app.api.novels.update_term", lambda *a, **k: None)
+    r = client.patch("/novels/1/glossary/3", json={"target_term": "Elder"})
+    assert r.status_code == 404
+
+
+def test_glossary_patch_non_admin_403(client):
+    _as(_User())
+    r = client.patch("/novels/1/glossary/3", json={"target_term": "Elder"})
+    assert r.status_code == 403
+
+
+def test_glossary_patch_strips_and_locks(client, monkeypatch):
+    _as(_User(admin=True))
+    _stub_sessions(monkeypatch)
+    seen = {}
+
+    def fake(s, nid, tid, **kw):
+        seen.update(kw)
+        return SimpleNamespace(id=tid, locked=True, source_term="a", target_term=kw["target_term"],
+                               kind="other", first_chapter=0, confidence=0.9)
+
+    monkeypatch.setattr("app.api.novels.update_term", fake)
+    r = client.patch("/novels/1/glossary/3", json={"target_term": "  Elder "})
+    assert r.status_code == 200 and seen["target_term"] == "Elder"
+    assert r.json()["locked"] is True

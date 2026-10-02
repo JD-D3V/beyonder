@@ -20,17 +20,30 @@ class SeedTerm:
     source: str
     target: str
     kind: str
+    exclude: tuple[str, ...] = ()
 
 
 @lru_cache(maxsize=1)
 def load_seed() -> list[SeedTerm]:
     raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8")) or []
-    return [SeedTerm(e["source"], e["target"], e.get("kind", "other")) for e in raw]
+    return [SeedTerm(e["source"], e["target"], e.get("kind", "other"), tuple(e.get("exclude") or ())) for e in raw]
 
 
 @lru_cache(maxsize=1)
 def _by_length() -> list[SeedTerm]:
     return sorted(load_seed(), key=lambda t: len(t.source), reverse=True)
+
+
+def _excluded(text: str, t: SeedTerm, i: int, end: int) -> bool:
+    """True if this occurrence sits inside one of the term's exclude strings."""
+    for ex in t.exclude:
+        off = ex.find(t.source)
+        while off >= 0:
+            a = i - off
+            if a >= 0 and text.startswith(ex, a):
+                return True
+            off = ex.find(t.source, off + 1)
+    return False
 
 
 def match_seed(text: str, known_sources: set[str]) -> list[dict]:
@@ -52,7 +65,7 @@ def match_seed(text: str, known_sources: set[str]) -> list[dict]:
                 break
             end = i + len(t.source)
             start = i + 1
-            if any(consumed[i:end]):
+            if any(consumed[i:end]) or _excluded(text, t, i, end):
                 continue
             for k in range(i, end):
                 consumed[k] = True

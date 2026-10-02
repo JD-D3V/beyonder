@@ -27,6 +27,9 @@ pgvector==0.3.6
 sqlalchemy==2.0.36
 alembic==1.14.0
 
+# Glossary seed
+PyYAML==6.0.2
+
 # Ingestion
 beautifulsoup4==4.12.3
 lxml==5.3.0
@@ -47,6 +50,3 @@ rich==13.9.4
 
 # Dev, test and eval extras live in requirements-dev.txt so the deployed image
 # stays small: no browser, no test runner.
-
-# Glossary seed
-PyYAML==6.0.2

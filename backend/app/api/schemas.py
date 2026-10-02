@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class NovelOut(BaseModel):
@@ -210,8 +210,18 @@ class ProgressOut(BaseModel):
 
 
 class GlossaryPatch(BaseModel):
-    target_term: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    target_term: Optional[str] = Field(default=None, max_length=256)
     locked: Optional[bool] = None
+
+    @field_validator("target_term")
+    @classmethod
+    def _strip_nonempty(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("target_term must not be blank")
+        return v
 
 
 TranslateResult.model_rebuild()

@@ -36,6 +36,7 @@ from ..storage.repository import (
     get_terms_for_chapters,
     get_translation,
     insert_relations,
+    insert_seed_terms,
     term_dicts,
     upsert_terms,
     upsert_translation,
@@ -63,7 +64,7 @@ class StepResult:
     new_terms: list[dict] = field(default_factory=list)
 
 
-def term_dicts_dedup(rows: list[dict]) -> list[dict]:
+def _dedup_by_id(rows: list[dict]) -> list[dict]:
     seen: set[int] = set()
     out = []
     for r in rows:
@@ -162,7 +163,7 @@ async def translate_step(
             with get_session() as s:
                 new_terms.extend(
                     term_dicts(
-                        upsert_terms(
+                        insert_seed_terms(
                             s, novel_id=novel_id, entries=hits,
                             target_lang=target_lang,
                         )
@@ -193,7 +194,7 @@ async def translate_step(
             )
             return StepResult(
                 chapter_idx, done, total, complete=False, stalled=True,
-                new_terms=term_dicts_dedup(new_terms),
+                new_terms=_dedup_by_id(new_terms),
             )
         acc = (acc + "\n\n" + r.translation) if acc else r.translation
         for t in r.new_terms:
@@ -205,14 +206,12 @@ async def translate_step(
             if r.new_terms:
                 for t in r.new_terms:
                     t.setdefault("added_by", translated_by)
-                new_terms.extend(
-                    term_dicts(
-                        upsert_terms(
-                            s, novel_id=novel_id, entries=r.new_terms,
-                            target_lang=target_lang,
-                        )
-                    )
+                made: list = []
+                upsert_terms(
+                    s, novel_id=novel_id, entries=r.new_terms,
+                    target_lang=target_lang, created_out=made,
                 )
+                new_terms.extend(term_dicts(made))
             wrote = upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text=acc,
                 model=llm.model_name, critic_passes=0,
@@ -223,7 +222,7 @@ async def translate_step(
             # A complete translation landed meanwhile (another request); our
             # write was refused so it is not clobbered. Nothing more to do.
             return StepResult(
-                chapter_idx, total, total, True, new_terms=term_dicts_dedup(new_terms)
+                chapter_idx, total, total, True, new_terms=_dedup_by_id(new_terms)
             )
         if done < total and (time.monotonic() - t0) >= time_budget_s:
             break
@@ -258,5 +257,5 @@ async def translate_step(
         complete=complete,
     )
     return StepResult(
-        chapter_idx, done, total, complete, new_terms=term_dicts_dedup(new_terms)
+        chapter_idx, done, total, complete, new_terms=_dedup_by_id(new_terms)
     )
