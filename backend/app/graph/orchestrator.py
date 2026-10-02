@@ -1,7 +1,7 @@
 """LangGraph wiring for the translation pipeline.
 
 Nodes:
-    extract -> translate -> critic -> (retry translate) -> persist
+    seed -> extract -> translate -> critic -> (retry translate) -> persist
 
 Branching:
     after critic, if violations and retries left, loop back to translate with
@@ -21,12 +21,14 @@ from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import translate_chapter
 from ..common.config import settings
 from ..common.logging import get_logger
+from ..glossary.seed import match_seed
 from ..llm.client import LLMClient
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
     get_terms_for_chapters,
     insert_relations,
+    term_dicts,
     upsert_terms,
     upsert_translation,
 )
@@ -93,6 +95,24 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
     }
 
 
+async def node_seed(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
+    """Add built-in xianxia terms found in the chapter that the glossary lacks."""
+    if state.error or not state.chapter_text:
+        return _skip(state)
+    known = {src for src, _ in state.glossary}
+    hits = match_seed(state.chapter_text, known)
+    if not hits:
+        return _skip(state)
+    added_by = config["configurable"].get("translated_by")
+    for h in hits:
+        h["first_chapter"] = state.chapter_idx
+        h["added_by"] = added_by
+    merged = list(state.glossary) + [
+        (h["source_term"], h["target_term"]) for h in hits
+    ]
+    return {"new_terms": list(state.new_terms) + hits, "glossary": merged}
+
+
 async def node_extract(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
@@ -110,7 +130,7 @@ async def node_extract(state: TranslateState, config: RunnableConfig) -> dict[st
         pair = (t["source_term"], t["target_term"])
         if pair not in merged:
             merged.append(pair)
-    return {"new_terms": new_terms, "glossary": merged}
+    return {"new_terms": list(state.new_terms) + new_terms, "glossary": merged}
 
 
 async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
@@ -174,15 +194,19 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
     if state.error:
         return _skip(state)
     wrote = True
+    persisted: list[dict] = []
     with get_session() as s:
         if state.new_terms:
-            # Re-fetch fresh: assign embeddings via separate flow if needed
-            upsert_terms(
+            added_by = config["configurable"].get("translated_by")
+            for t in state.new_terms:
+                t.setdefault("added_by", added_by)
+            rows = upsert_terms(
                 s,
                 novel_id=state.novel_id,
                 entries=state.new_terms,
                 target_lang=state.target_lang,
             )
+            persisted = term_dicts(rows)
         if state.relations:
             insert_relations(s, novel_id=state.novel_id, entries=state.relations)
         if state.translation and state.chapter_db_id is not None:
@@ -204,7 +228,10 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
         new_terms=len(state.new_terms),
         relations=len(state.relations),
     )
-    return {"done": True, "lost_race": wrote is False}
+    out: dict[str, Any] = {"done": True, "lost_race": wrote is False}
+    if persisted:
+        out["new_terms"] = persisted
+    return out
 
 
 # --- graph ---------------------------------------------------------------
@@ -216,6 +243,7 @@ def _route_after_critic(state: TranslateState) -> str:
 def build_translation_graph():
     g = StateGraph(TranslateState)
     g.add_node("load", node_load)
+    g.add_node("seed", node_seed)
     g.add_node("extract", node_extract)
     g.add_node("translate", node_translate)
     g.add_node("critic", node_critic)
@@ -223,7 +251,8 @@ def build_translation_graph():
     g.add_node("persist", node_persist)
 
     g.set_entry_point("load")
-    g.add_edge("load", "extract")
+    g.add_edge("load", "seed")
+    g.add_edge("seed", "extract")
     g.add_edge("extract", "translate")
     g.add_edge("translate", "critic")
     g.add_conditional_edges(

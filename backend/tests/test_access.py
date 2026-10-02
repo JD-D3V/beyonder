@@ -156,7 +156,7 @@ def test_admin_force_resets_and_records_translator(client, monkeypatch):
         seen.update(kw)
         return SimpleNamespace(
             chapter_idx=0, pieces_done=1, pieces_total=2, complete=False,
-            stalled=False, error=None,
+            stalled=False, error=None, new_terms=[],
         )
 
     monkeypatch.setattr("app.api.translate.translate_step", fake_step)

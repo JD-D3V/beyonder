@@ -164,7 +164,7 @@ def upsert_terms(
     entries: Iterable[dict],
     target_lang: str = "en",
 ) -> list[Term]:
-    """Insert or update terms. Higher-confidence wins on conflict."""
+    """Insert or update terms. Higher-confidence wins; locked rows never change."""
     out: list[Term] = []
     for e in entries:
         src = e["source_term"].strip()
@@ -176,6 +176,7 @@ def upsert_terms(
         conf = float(e.get("confidence", 0.5))
         notes = e.get("notes")
         embedding = e.get("embedding")
+        added_by = e.get("added_by")
 
         existing = session.execute(
             select(Term).where(
@@ -195,9 +196,13 @@ def upsert_terms(
                 confidence=conf,
                 notes=notes,
                 embedding=embedding,
+                added_by=added_by,
             )
             session.add(t)
             out.append(t)
+        elif existing.locked:
+            # Admin-curated: leave the rendering alone.
+            out.append(existing)
         else:
             if conf > existing.confidence:
                 existing.target_term = tgt
@@ -209,6 +214,28 @@ def upsert_terms(
             existing.first_chapter = min(existing.first_chapter, first_chapter)
             out.append(existing)
     session.flush()
+    return out
+
+
+def term_dicts(terms: Iterable[Term]) -> list[dict]:
+    """Persisted terms as API-shaped dicts (with ids), de-duplicated."""
+    seen: set[int] = set()
+    out: list[dict] = []
+    for t in terms:
+        if t.id in seen:
+            continue
+        seen.add(t.id)
+        out.append(
+            {
+                "id": t.id,
+                "locked": bool(t.locked),
+                "source_term": t.source_term,
+                "target_term": t.target_term,
+                "kind": t.kind,
+                "first_chapter": t.first_chapter,
+                "confidence": t.confidence,
+            }
+        )
     return out
 
 
@@ -440,3 +467,26 @@ def delete_novel(session: Session, novel_id: int) -> bool:
     session.delete(novel)
     session.flush()
     return True
+
+
+def update_term(
+    session: Session,
+    novel_id: int,
+    term_id: int,
+    *,
+    target_term: str | None = None,
+    locked: bool | None = None,
+) -> Term | None:
+    """Admin edit of one glossary entry. Editing the rendering locks it unless
+    ``locked`` says otherwise."""
+    t = session.get(Term, term_id)
+    if t is None or t.novel_id != novel_id:
+        return None
+    if target_term is not None:
+        t.target_term = target_term.strip()
+        if locked is None:
+            t.locked = True
+    if locked is not None:
+        t.locked = locked
+    session.flush()
+    return t

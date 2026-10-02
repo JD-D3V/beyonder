@@ -19,6 +19,7 @@ from ..storage.repository import (
     reset_translation,
 )
 from .schemas import (
+    GlossaryEntryOut,
     TranslateBatchIn,
     TranslateBatchResult,
     TranslateIn,
@@ -29,6 +30,11 @@ from .schemas import (
 
 log = get_logger(__name__)
 router = APIRouter()
+
+
+def _terms_out(terms: list[dict]) -> list[GlossaryEntryOut]:
+    """Only terms that were persisted (they carry an id) are reported."""
+    return [GlossaryEntryOut(**t) for t in terms if t.get("id") is not None]
 
 
 def _complete_translation(s, novel_id: int, idx: int, target_lang: str):
@@ -62,7 +68,7 @@ async def translate(
                 return TranslateResult(
                     chapter_idx=body.chapter_idx,
                     translation=done.text,
-                    new_terms=0,
+                    new_terms=[],
                     critic_passes=done.critic_passes,
                 )
     # Forced admin runs overwrite in place: the graph's upsert replaces the row.
@@ -88,13 +94,13 @@ async def translate(
             return TranslateResult(
                 chapter_idx=body.chapter_idx,
                 translation=stored.text,
-                new_terms=0,
+                new_terms=[],
                 critic_passes=stored.critic_passes,
             )
     return TranslateResult(
         chapter_idx=body.chapter_idx,
         translation=state.translation,
-        new_terms=len(state.new_terms),
+        new_terms=_terms_out(state.new_terms),
         critic_passes=state.critic_passes,
     )
 
@@ -224,4 +230,5 @@ async def translate_step_route(
         pieces_total=res.pieces_total,
         complete=res.complete,
         stalled=res.stalled,
+        new_terms=_terms_out(res.new_terms),
     )

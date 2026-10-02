@@ -91,6 +91,8 @@ async def glossary(
         )
         return [
             GlossaryEntryOut(
+                id=t.id,
+                locked=bool(t.locked),
                 source_term=t.source_term,
                 target_term=t.target_term,
                 kind=t.kind,

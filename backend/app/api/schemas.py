@@ -103,7 +103,7 @@ class TranslateIn(BaseModel):
 class TranslateResult(BaseModel):
     chapter_idx: int
     translation: str
-    new_terms: int
+    new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
     critic_passes: int
 
 
@@ -126,6 +126,8 @@ class TranslateStepResult(BaseModel):
     # A piece came back empty this call (transient rate-limit / model outage).
     # No progress and nothing corrupted — pause and call again.
     stalled: bool = False
+    # Terms first persisted this call (seed hits and any the model found).
+    new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
 
 
 class AskIn(BaseModel):
@@ -151,6 +153,8 @@ class AskOut(BaseModel):
 
 
 class GlossaryEntryOut(BaseModel):
+    id: Optional[int] = None
+    locked: bool = False
     source_term: str
     target_term: str
     kind: str
@@ -203,3 +207,12 @@ class TranslateBatchResult(BaseModel):
 class ProgressOut(BaseModel):
     novel_id: int
     current_chapter: int
+
+
+class GlossaryPatch(BaseModel):
+    target_term: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    locked: Optional[bool] = None
+
+
+TranslateResult.model_rebuild()
+TranslateStepResult.model_rebuild()

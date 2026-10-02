@@ -22,11 +22,12 @@ route short chapters to ``/translate`` (with the critic) and long ones here.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..agents.relation import extract_relations_from_chapter
 from ..agents.translator import split_paragraphs, translate_paragraph
 from ..common.logging import get_logger
+from ..glossary.seed import match_seed
 from ..llm.client import LLMClient
 from ..storage.db import get_session
 from ..storage.repository import (
@@ -35,6 +36,7 @@ from ..storage.repository import (
     get_terms_for_chapters,
     get_translation,
     insert_relations,
+    term_dicts,
     upsert_terms,
     upsert_translation,
 )
@@ -57,6 +59,18 @@ class StepResult:
     # transient rate-limit/outage after its retries). No progress was made and
     # nothing was corrupted; the caller should pause and retry the same piece.
     stalled: bool = False
+    # Terms persisted this call (seed hits, plus any the model found per piece).
+    new_terms: list[dict] = field(default_factory=list)
+
+
+def term_dicts_dedup(rows: list[dict]) -> list[dict]:
+    seen: set[int] = set()
+    out = []
+    for r in rows:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            out.append(r)
+    return out
 
 
 def plan_resume(
@@ -136,6 +150,26 @@ async def translate_step(
     if complete_already:
         return StepResult(chapter_idx, total, total, True)
 
+    new_terms: list[dict] = []
+    if start == 0:
+        # Seed the glossary once per chapter, before the first piece, so long
+        # chapters get the same built-in terms as the single-pass path.
+        hits = match_seed(source, {src for src, _ in glossary})
+        if hits:
+            for h in hits:
+                h["first_chapter"] = chapter_idx
+                h["added_by"] = translated_by
+            with get_session() as s:
+                new_terms.extend(
+                    term_dicts(
+                        upsert_terms(
+                            s, novel_id=novel_id, entries=hits,
+                            target_lang=target_lang,
+                        )
+                    )
+                )
+            glossary.extend((h["source_term"], h["target_term"]) for h in hits)
+
     done = start
     t0 = time.monotonic()
     for i in range(start, total):
@@ -158,7 +192,8 @@ async def translate_step(
                 piece=i,
             )
             return StepResult(
-                chapter_idx, done, total, complete=False, stalled=True
+                chapter_idx, done, total, complete=False, stalled=True,
+                new_terms=term_dicts_dedup(new_terms),
             )
         acc = (acc + "\n\n" + r.translation) if acc else r.translation
         for t in r.new_terms:
@@ -168,8 +203,15 @@ async def translate_step(
         done = i + 1
         with get_session() as s:
             if r.new_terms:
-                upsert_terms(
-                    s, novel_id=novel_id, entries=r.new_terms, target_lang=target_lang
+                for t in r.new_terms:
+                    t.setdefault("added_by", translated_by)
+                new_terms.extend(
+                    term_dicts(
+                        upsert_terms(
+                            s, novel_id=novel_id, entries=r.new_terms,
+                            target_lang=target_lang,
+                        )
+                    )
                 )
             wrote = upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text=acc,
@@ -180,7 +222,9 @@ async def translate_step(
         if wrote is False:
             # A complete translation landed meanwhile (another request); our
             # write was refused so it is not clobbered. Nothing more to do.
-            return StepResult(chapter_idx, total, total, True)
+            return StepResult(
+                chapter_idx, total, total, True, new_terms=term_dicts_dedup(new_terms)
+            )
         if done < total and (time.monotonic() - t0) >= time_budget_s:
             break
 
@@ -213,4 +257,6 @@ async def translate_step(
         total=total,
         complete=complete,
     )
-    return StepResult(chapter_idx, done, total, complete)
+    return StepResult(
+        chapter_idx, done, total, complete, new_terms=term_dicts_dedup(new_terms)
+    )

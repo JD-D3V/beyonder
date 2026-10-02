@@ -47,3 +47,6 @@ rich==13.9.4
 
 # Dev, test and eval extras live in requirements-dev.txt so the deployed image
 # stays small: no browser, no test runner.
+
+# Glossary seed
+PyYAML==6.0.2

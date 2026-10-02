@@ -144,6 +144,13 @@ class Term(Base):
     first_chapter: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Locked terms are curated by an admin; automatic upserts never change them.
+    locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    added_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     embedding: Mapped[Optional[list[float]]] = mapped_column(
         Vector(settings.embedding_dim), nullable=True
     )

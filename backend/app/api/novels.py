@@ -27,7 +27,9 @@ from ..storage.repository import (
     get_translation,
     insert_chapter,
     library_rows,
+    term_dicts,
     update_novel,
+    update_term,
 )
 from .schemas import (
     ChapterDetail,
@@ -37,6 +39,8 @@ from .schemas import (
     IngestResult,
     IngestTextIn,
     IngestUrlIn,
+    GlossaryEntryOut,
+    GlossaryPatch,
     NovelOut,
     NovelPatch,
 )
@@ -118,6 +122,26 @@ async def patch_novel_route(
         if updated is None:
             raise HTTPException(404, "novel not found")
     return await get_novel_route(novel_id)
+
+
+@router.patch(
+    "/novels/{novel_id}/glossary/{term_id}", response_model=GlossaryEntryOut
+)
+async def patch_glossary_term_route(
+    novel_id: int,
+    term_id: int,
+    body: GlossaryPatch,
+    _admin: User = Depends(require_admin),
+) -> GlossaryEntryOut:
+    """Edit a glossary rendering and/or lock it. Editing a rendering locks it
+    unless ``locked`` is sent explicitly; locked terms survive re-translation."""
+    with get_session() as s:
+        t = update_term(
+            s, novel_id, term_id, target_term=body.target_term, locked=body.locked
+        )
+        if t is None:
+            raise HTTPException(404, "term not found")
+        return GlossaryEntryOut(**term_dicts([t])[0])
 
 
 @router.delete("/novels/{novel_id}")
