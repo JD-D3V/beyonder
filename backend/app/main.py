@@ -10,8 +10,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.auth_routes import router as auth_router
 from .api.router import router
-from .common.auth import TokenAuthMiddleware
 from .common.config import settings
 from .common.logging import get_logger
 from .storage.db import init_engine
@@ -27,19 +27,17 @@ def create_app() -> FastAPI:
     )
     # CORS — the frontend is always on another origin, locally (container port
     # mapping) and in production (static host vs API host). Set CORS_ORIGINS.
-    # Order matters: this runs before CORS on the way in, and a 401 still needs
-    # CORS headers on the way out for the browser to show the body rather than
-    # an opaque network error. Starlette applies middleware in reverse order of
-    # registration, so registering auth first puts CORS outermost.
-    app.add_middleware(TokenAuthMiddleware)
+    # The frontend is always on another origin (container port mapping locally,
+    # static host vs API host in production). Set CORS_ORIGINS.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
     app.include_router(router)
+    app.include_router(auth_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -48,7 +46,6 @@ def create_app() -> FastAPI:
             "startup",
             model=settings.gemini_model,
             cors=settings.cors_origin_list,
-            private=settings.is_private,
             embed_model=settings.embed_model_name,
             db=settings.database_url.split("@")[-1],
             qdrant=settings.qdrant_url,

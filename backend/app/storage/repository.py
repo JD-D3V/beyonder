@@ -4,14 +4,14 @@ Functions here take an open Session — they never open or commit their own.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import Chapter, Novel, Relation, Term, Translation, User
+from ..common.config import settings
+from .models import Chapter, Novel, ReadingProgress, Relation, Term, Translation
 
 
 # --- Novels ---------------------------------------------------------------
@@ -228,34 +228,22 @@ def get_relations(
     ).scalars().all()
 
 
-# --- Users ----------------------------------------------------------------
+# --- Reading progress -------------------------------------------------------
 
-def get_or_create_user(session: Session, handle: str) -> User:
-    u = session.execute(select(User).where(User.handle == handle)).scalar_one_or_none()
-    if u is None:
-        u = User(handle=handle, progress_json="{}")
-        session.add(u)
-        session.flush()
-    return u
+def get_progress(session: Session, user_id: int, novel_id: int) -> int:
+    row = session.get(ReadingProgress, (user_id, novel_id))
+    return row.chapter_idx if row else settings.default_current_chapter
 
 
-def get_user_chapter(session: Session, user: User, novel_id: int) -> int:
-    try:
-        prog = json.loads(user.progress_json or "{}")
-    except json.JSONDecodeError:
-        prog = {}
-    return int(prog.get(str(novel_id), 0))
-
-
-def set_user_chapter(
-    session: Session, user: User, novel_id: int, chapter_idx: int
-) -> None:
-    try:
-        prog = json.loads(user.progress_json or "{}")
-    except json.JSONDecodeError:
-        prog = {}
-    prog[str(novel_id)] = int(chapter_idx)
-    user.progress_json = json.dumps(prog)
+def set_progress(session: Session, user_id: int, novel_id: int, idx: int) -> None:
+    row = session.get(ReadingProgress, (user_id, novel_id))
+    if row is None:
+        session.add(
+            ReadingProgress(user_id=user_id, novel_id=novel_id, chapter_idx=int(idx))
+        )
+    else:
+        row.chapter_idx = int(idx)
+    session.flush()
 
 
 # --- Library views --------------------------------------------------------
@@ -386,20 +374,12 @@ def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
 def delete_novel(session: Session, novel_id: int) -> bool:
     """Delete a novel and everything hanging off it.
 
-    Chapters, translations, terms and relations cascade in the schema. Reading
-    progress is a JSON blob on the user, so prune it here.
+    Chapters, translations, terms, relations and reading progress all cascade
+    in the schema.
     """
     novel = session.get(Novel, novel_id)
     if novel is None:
         return False
     session.delete(novel)
-    for user in session.execute(select(User)).scalars().all():
-        try:
-            progress = json.loads(user.progress_json or "{}")
-        except ValueError:
-            continue
-        if str(novel_id) in progress:
-            progress.pop(str(novel_id))
-            user.progress_json = json.dumps(progress)
     session.flush()
     return True

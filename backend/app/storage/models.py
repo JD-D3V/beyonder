@@ -12,7 +12,9 @@ Schema design notes
   semantic glossary search (catches surface variants like 渡劫/度劫).
 - ``relations`` is the knowledge graph adjacency list. ``first_chapter`` is the
   spoiler key — drop relations whose first_chapter > user.current_chapter.
-- ``users`` holds the per-user reading position. v1 has a single demo user.
+- ``users`` are invite-only accounts (one admin); ``sessions`` hold hashed bearer
+  tokens, ``invites`` single-use signup codes, ``reading_progress`` the per-user
+  spoiler key, ``library_entries`` personal shelves.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from typing import Optional
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -29,6 +32,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -110,6 +114,9 @@ class Translation(Base):
     # far, and ``text`` holds the assembled prefix — a partial the next
     # /translate/step call resumes from.
     pieces_done: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    translated_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -168,9 +175,65 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    handle: Mapped[str] = mapped_column(String(64), unique=True)
-    # JSON-ish mapping: {novel_id: current_chapter_idx}. Kept simple for v1.
-    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    # Always stored lowercased and stripped (done in code, not the database).
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class UserSession(Base):
+    """Named ``UserSession`` so it cannot be confused with sqlalchemy's Session."""
+
+    __tablename__ = "sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    used_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReadingProgress(Base):
+    __tablename__ = "reading_progress"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LibraryEntry(Base):
+    __tablename__ = "library_entries"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    shelf: Mapped[str] = mapped_column(String(16))  # reading | plan | completed
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

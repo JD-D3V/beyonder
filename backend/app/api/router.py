@@ -29,9 +29,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select
 
+from ..auth.deps import current_user
 from ..agents.qa import answer_question
 from ..common.config import settings
 from ..common.logging import get_logger
@@ -46,7 +47,7 @@ from ..ingest.splitter import split_chapters
 from ..ingest.txt_loader import load_txt
 from ..kg.graph import build_subgraph
 from ..storage.db import get_session
-from ..storage.models import Chapter, Novel
+from ..storage.models import Chapter, Novel, User
 from ..storage.repository import (
     chapter_rows,
     create_novel,
@@ -54,13 +55,12 @@ from ..storage.repository import (
     get_chapter_by_idx,
     get_chapters,
     get_novel,
-    get_or_create_user,
-    get_user_chapter,
+    get_progress,
     get_terms_for_chapters,
     get_translation,
     insert_chapter,
     library_rows,
-    set_user_chapter,
+    set_progress,
     update_novel,
 )
 from .schemas import (
@@ -599,22 +599,20 @@ async def knowledge_graph(novel_id: int, up_to: int = 100000, target_lang: str =
 
 
 @router.get("/progress", response_model=ProgressOut)
-async def get_progress(novel_id: int, handle: str = "demo") -> ProgressOut:
-    """Where this reader got to. Handles are per browser, not accounts."""
+async def read_progress(
+    novel_id: int, user: User = Depends(current_user)
+) -> ProgressOut:
+    """Where this reader got to (Task 5 reworks this route)."""
     with get_session() as s:
-        user = get_or_create_user(s, handle)
         return ProgressOut(
-            handle=handle,
-            novel_id=novel_id,
-            current_chapter=get_user_chapter(s, user, novel_id),
+            novel_id=novel_id, current_chapter=get_progress(s, user.id, novel_id)
         )
 
 
 @router.post("/progress")
-async def progress(body: ProgressIn) -> dict:
+async def progress(body: ProgressIn, user: User = Depends(current_user)) -> dict:
     with get_session() as s:
-        user = get_or_create_user(s, body.handle)
-        set_user_chapter(s, user, body.novel_id, body.current_chapter)
+        set_progress(s, user.id, body.novel_id, body.current_chapter)
     return {"ok": True}
 
 

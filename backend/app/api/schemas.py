@@ -172,7 +172,6 @@ class KgOut(BaseModel):
 
 
 class ProgressIn(BaseModel):
-    handle: str = "demo"
     novel_id: int
     current_chapter: int
 
@@ -196,6 +195,5 @@ class TranslateBatchResult(BaseModel):
 
 
 class ProgressOut(BaseModel):
-    handle: str
     novel_id: int
     current_chapter: int

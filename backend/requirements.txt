@@ -8,6 +8,9 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 python-multipart==0.0.20
 
+# Accounts
+argon2-cffi==25.1.0
+
 # LLM + embeddings
 fastembed==0.8.1
 
