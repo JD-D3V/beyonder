@@ -64,6 +64,15 @@ function ReaderInner() {
     api
       .setProgress({ novel_id: novelId, current_chapter: chapterIdx })
       .catch(() => undefined);
+    // Signed-out readers keep their place in this browser.
+    try {
+      const key = "beyonder.anonProgress";
+      const cur = JSON.parse(window.localStorage.getItem(key) || "{}");
+      cur[String(novelId)] = chapterIdx;
+      window.localStorage.setItem(key, JSON.stringify(cur));
+    } catch {
+      // storage blocked; nothing to do
+    }
   }, [novelId, chapterIdx]);
 
   async function translateThis() {

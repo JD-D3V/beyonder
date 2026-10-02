@@ -140,6 +140,8 @@ export interface ChapterDetail {
 }
 
 export interface GlossaryEntry {
+  id?: number | null;
+  locked?: boolean;
   source_term: string;
   target_term: string;
   kind: string;
@@ -203,6 +205,42 @@ export interface TranslateStepResult {
   stalled: boolean;
 }
 
+export type Shelf = "reading" | "plan" | "completed";
+
+export interface LibraryItem extends Novel {
+  current_chapter: number;
+}
+
+export interface LibraryOut {
+  reading: LibraryItem[];
+  plan: LibraryItem[];
+  completed: LibraryItem[];
+}
+
+export interface ReviewFlag {
+  id: number;
+  novel_id: number;
+  chapter_idx: number;
+  kind: string;
+  source_span: string;
+  target_span: string;
+  note: string;
+  status: string;
+  created_at: string | null;
+  resolved_by: number | null;
+}
+
+export interface NovelQuery {
+  q?: string;
+  tag?: string;
+  status?: string;
+  min_chapters?: number;
+  max_chapters?: number;
+  sort?: "updated" | "new" | "chapters";
+  limit?: number;
+  offset?: number;
+}
+
 export interface IngestResult {
   novel_id: number;
   chapters_added: number;
@@ -225,7 +263,14 @@ export const api = {
     ),
 
   // --- library ---
-  listNovels: () => req<Novel[]>("/novels"),
+  listNovels: (query: NovelQuery = {}) => {
+    const sp = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== "" && v !== null) sp.set(k, String(v));
+    }
+    const qs = sp.toString();
+    return req<Novel[]>(`/novels${qs ? `?${qs}` : ""}`);
+  },
   getNovel: (id: number) => req<Novel>(`/novels/${id}`),
   patchNovel: (id: number, body: NovelPatch) =>
     req<Novel>(`/novels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -335,6 +380,35 @@ export const api = {
     req<{ novel_id: number; current_chapter: number }>(
       `/progress?novel_id=${novelId}`,
     ),
+
+  // --- shelves, flags, glossary edits ---
+  library: () => req<LibraryOut>("/library"),
+  setShelf: (novelId: number, shelf: Shelf) =>
+    req<unknown>(`/library/${novelId}`, {
+      method: "PUT",
+      body: JSON.stringify({ shelf }),
+    }),
+  removeFromLibrary: (novelId: number) =>
+    req<unknown>(`/library/${novelId}`, { method: "DELETE" }),
+  flags: (novelId: number, status: string = "open", upTo?: number) => {
+    const sp = new URLSearchParams({ status });
+    if (upTo !== undefined) sp.set("up_to", String(upTo));
+    return req<ReviewFlag[]>(`/novels/${novelId}/flags?${sp.toString()}`);
+  },
+  resolveFlag: (flagId: number, wrongRendering?: string) =>
+    req<unknown>(`/flags/${flagId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify(wrongRendering ? { wrong_rendering: wrongRendering } : {}),
+    }),
+  patchGlossaryTerm: (
+    novelId: number,
+    termId: number,
+    body: { target_term?: string; locked?: boolean },
+  ) =>
+    req<unknown>(`/novels/${novelId}/glossary/${termId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   // --- accounts ---
   login: (body: { email: string; password: string }) =>

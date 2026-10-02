@@ -4,7 +4,31 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
-import { api, ChapterRow, CRITIC_MAX_CHARS, Novel } from "../../lib/api";
+import {
+  api,
+  ChapterRow,
+  CRITIC_MAX_CHARS,
+  GlossaryEntry,
+  Novel,
+  ReviewFlag,
+  Shelf,
+} from "../../lib/api";
+import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
+
+const ANON_PROGRESS_KEY = "beyonder.anonProgress";
+
+function readAnonProgress(novelId: number): number {
+  try {
+    const raw = window.localStorage.getItem(ANON_PROGRESS_KEY);
+    if (!raw) return 0;
+    const v = (JSON.parse(raw) as Record<string, unknown>)[String(novelId)];
+    return typeof v === "number" && v >= 0 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+type Tab = "chapters" | "glossary" | "flags";
 
 function compactNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -31,6 +55,27 @@ function BookInner() {
   // A ref, not state: the loop below reads it between awaits and would
   // otherwise close over the value from the render that started it.
   const stopped = useRef(false);
+
+  const [session, setSession] = useState<Session | null>(null);
+  const [tab, setTab] = useState<Tab>("chapters");
+  const [shelf, setShelf] = useState<Shelf | "">("");
+  const [glossary, setGlossary] = useState<GlossaryEntry[] | null>(null);
+  const [flags, setFlags] = useState<ReviewFlag[] | null>(null);
+  const [flagStatus, setFlagStatus] = useState("open");
+  const [wrongInputs, setWrongInputs] = useState<Record<number, string>>({});
+  const [termEdits, setTermEdits] = useState<Record<number, string>>({});
+  const isAdmin = Boolean(session?.user.is_admin);
+
+  useEffect(() => {
+    const sync = () => setSession(getSession());
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
 
   // Edit form
   const [title, setTitle] = useState("");
@@ -64,13 +109,97 @@ function BookInner() {
     load();
   }, [load]);
 
+  // Signed in: progress and shelf live on the server. Otherwise this
+  // browser's own record (the reader writes it) is all there is.
+  const signedIn = session !== null;
   useEffect(() => {
     if (!novelId) return;
+    if (!signedIn) {
+      setResumeAt(readAnonProgress(novelId));
+      setShelf("");
+      return;
+    }
     api
       .getProgress(novelId)
       .then((p) => setResumeAt(p.current_chapter))
       .catch(() => undefined);
-  }, [novelId]);
+    api
+      .library()
+      .then((lib) => {
+        const found = (["reading", "plan", "completed"] as Shelf[]).find((k) =>
+          lib[k].some((n) => n.id === novelId),
+        );
+        setShelf(found || "");
+      })
+      .catch(() => undefined);
+  }, [novelId, signedIn]);
+
+  useEffect(() => {
+    if (!novelId) return;
+    if (tab === "glossary" && glossary === null) {
+      api.glossary(novelId).then(setGlossary).catch((e) => setErr(String(e)));
+    }
+  }, [novelId, tab, glossary]);
+
+  useEffect(() => {
+    if (!novelId || tab !== "flags") return;
+    setFlags(null);
+    api.flags(novelId, flagStatus).then(setFlags).catch((e) => setErr(String(e)));
+  }, [novelId, tab, flagStatus]);
+
+  async function changeShelf(value: string) {
+    const prev = shelf;
+    setShelf(value as Shelf | "");
+    try {
+      if (value) await api.setShelf(novelId, value as Shelf);
+      else await api.removeFromLibrary(novelId);
+    } catch (e) {
+      setShelf(prev);
+      setErr(String(e));
+    }
+  }
+
+  async function resolveFlag(f: ReviewFlag) {
+    setErr(null);
+    try {
+      await api.resolveFlag(f.id, (wrongInputs[f.id] || "").trim() || undefined);
+      setFlags((cur) => (cur ? cur.filter((x) => x.id !== f.id) : cur));
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function patchTerm(
+    t: GlossaryEntry,
+    body: { target_term?: string; locked?: boolean },
+  ) {
+    if (t.id == null) return;
+    setErr(null);
+    try {
+      await api.patchGlossaryTerm(novelId, t.id, body);
+      setGlossary((cur) =>
+        cur
+          ? cur.map((x) =>
+              x.id === t.id
+                ? {
+                    ...x,
+                    ...(body.target_term !== undefined
+                      ? { target_term: body.target_term }
+                      : {}),
+                    ...(body.locked !== undefined ? { locked: body.locked } : {}),
+                  }
+                : x,
+            )
+          : cur,
+      );
+      setTermEdits((cur) => {
+        const { [t.id as number]: _drop, ...rest } = cur;
+        return rest;
+      });
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
 
   async function saveEdits() {
     setBusy(true);
@@ -335,6 +464,24 @@ function BookInner() {
                     <span className="l">Translated</span>
                   </div>
                 </div>
+                {signedIn && (
+                  <div className="row">
+                    <label className="small muted" htmlFor="shelf-select">
+                      Shelf
+                    </label>
+                    <select
+                      id="shelf-select"
+                      value={shelf}
+                      onChange={(e) => changeShelf(e.target.value)}
+                      style={{ width: "auto" }}
+                    >
+                      <option value="">Not in my library</option>
+                      <option value="reading">Reading</option>
+                      <option value="plan">Plan to read</option>
+                      <option value="completed">Completed</option>
+                    </select>
+                  </div>
+                )}
                 <div className="row">
                   <Link href={`/reader?novel=${novel.id}&ch=${resumeAt}`}>
                     <button>
@@ -373,9 +520,6 @@ function BookInner() {
                   <button className="secondary" onClick={() => setEditing(true)}>
                     Edit details
                   </button>
-                  <Link href={`/glossary?novel=${novel.id}`}>
-                    <button className="secondary">Glossary</button>
-                  </Link>
                   <button className="secondary" onClick={remove} disabled={busy}>
                     Delete
                   </button>
@@ -390,6 +534,155 @@ function BookInner() {
       {note && <div className="notice">{note}</div>}
       {progressNote && <div className="notice">{progressNote}</div>}
 
+      <div className="tabs">
+        {(
+          [
+            ["chapters", "Chapters"],
+            ["glossary", "Glossary"],
+            ["flags", "Review flags"],
+          ] as [Tab, string][]
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            className={`tab ${tab === k ? "active" : ""}`}
+            onClick={() => setTab(k)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "glossary" && (
+        <div className="panel">
+          {glossary === null && <p className="muted">Loading...</p>}
+          {glossary !== null && glossary.length === 0 && (
+            <p className="muted">No glossary terms yet.</p>
+          )}
+          {glossary !== null && glossary.length > 0 && (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Translation</th>
+                  <th>Kind</th>
+                  <th>From ch.</th>
+                  {isAdmin && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {glossary.map((t, i) => {
+                  const editable = isAdmin && t.id != null;
+                  const draft = t.id != null ? termEdits[t.id] : undefined;
+                  return (
+                    <tr key={t.id ?? `${t.source_term}-${i}`}>
+                      <td>{t.source_term}</td>
+                      <td>
+                        {editable && t.id != null ? (
+                          <input
+                            type="text"
+                            value={draft ?? t.target_term}
+                            onChange={(e) =>
+                              setTermEdits((cur) => ({
+                                ...cur,
+                                [t.id as number]: e.target.value,
+                              }))
+                            }
+                          />
+                        ) : (
+                          t.target_term
+                        )}
+                        {t.locked && <span className="pill"> locked</span>}
+                      </td>
+                      <td>{t.kind}</td>
+                      <td>{t.first_chapter + 1}</td>
+                      {isAdmin && (
+                        <td>
+                          {editable && (
+                            <div className="row">
+                              <button
+                                className="secondary"
+                                disabled={
+                                  draft === undefined ||
+                                  !draft.trim() ||
+                                  draft.trim() === t.target_term
+                                }
+                                onClick={() =>
+                                  patchTerm(t, { target_term: (draft || "").trim() })
+                                }
+                              >
+                                Save
+                              </button>
+                              <button
+                                className="secondary"
+                                onClick={() => patchTerm(t, { locked: !t.locked })}
+                              >
+                                {t.locked ? "Unlock" : "Lock"}
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {tab === "flags" && (
+        <div className="panel">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <select
+              value={flagStatus}
+              onChange={(e) => setFlagStatus(e.target.value)}
+              style={{ width: "auto" }}
+              aria-label="Flag status"
+            >
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+            </select>
+          </div>
+          {flags === null && <p className="muted">Loading...</p>}
+          {flags !== null && flags.length === 0 && (
+            <p className="muted">No {flagStatus} flags.</p>
+          )}
+          {flags?.map((f) => (
+            <div className="flag-item" key={f.id} style={{ padding: "10px 0" }}>
+              <div className="small muted">
+                <Link href={`/reader?novel=${novel.id}&ch=${f.chapter_idx}`}>
+                  Chapter {f.chapter_idx + 1}
+                </Link>{" "}
+                · {f.kind.replace(/_/g, " ")}
+              </div>
+              {f.source_span && <div>Source: {f.source_span}</div>}
+              {f.target_span && <div>Translation: {f.target_span}</div>}
+              {f.note && <div className="small muted">{f.note}</div>}
+              {isAdmin && f.status === "open" && (
+                <div className="row" style={{ marginTop: 6 }}>
+                  {f.kind === "glossary_drift" && (
+                    <input
+                      type="text"
+                      placeholder="Wrong rendering (optional)"
+                      value={wrongInputs[f.id] || ""}
+                      onChange={(e) =>
+                        setWrongInputs((cur) => ({ ...cur, [f.id]: e.target.value }))
+                      }
+                      style={{ width: 220 }}
+                    />
+                  )}
+                  <button className="secondary" onClick={() => resolveFlag(f)}>
+                    Resolve
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "chapters" && (
       <div className="panel">
         <div className="page-head" style={{ marginBottom: 10 }}>
           <div>
@@ -425,6 +718,7 @@ function BookInner() {
           ))}
         </div>
       </div>
+      )}
     </>
   );
 }
