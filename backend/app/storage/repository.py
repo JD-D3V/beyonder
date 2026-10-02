@@ -81,6 +81,7 @@ def upsert_translation(
     model: str,
     critic_passes: int,
     pieces_done: int | None = None,
+    translated_by: int | None = None,
 ) -> Translation:
     """Insert or replace the translation for (chapter, lang).
 
@@ -99,6 +100,8 @@ def upsert_translation(
         existing.model = model
         existing.critic_passes = critic_passes
         existing.pieces_done = pieces_done
+        if translated_by is not None:
+            existing.translated_by = translated_by
         return existing
     tr = Translation(
         chapter_id=chapter_id,
@@ -107,10 +110,22 @@ def upsert_translation(
         model=model,
         critic_passes=critic_passes,
         pieces_done=pieces_done,
+        translated_by=translated_by,
     )
     session.add(tr)
     session.flush()
     return tr
+
+
+def reset_translation(session: Session, *, chapter_id: int, target_lang: str) -> None:
+    """Delete the saved translation so a forced re-translate starts clean."""
+    session.execute(
+        sa_delete(Translation).where(
+            Translation.chapter_id == chapter_id,
+            Translation.target_lang == target_lang,
+        )
+    )
+    session.flush()
 
 
 # --- Terms ----------------------------------------------------------------
@@ -244,6 +259,21 @@ def set_progress(session: Session, user_id: int, novel_id: int, idx: int) -> Non
     else:
         row.chapter_idx = int(idx)
     session.flush()
+
+
+def advance_progress(session: Session, user_id: int, novel_id: int, idx: int) -> int:
+    """Move the reading position forward only; returns the resulting position."""
+    row = session.get(ReadingProgress, (user_id, novel_id))
+    if row is None:
+        session.add(
+            ReadingProgress(user_id=user_id, novel_id=novel_id, chapter_idx=int(idx))
+        )
+        session.flush()
+        return int(idx)
+    if int(idx) > row.chapter_idx:
+        row.chapter_idx = int(idx)
+        session.flush()
+    return row.chapter_idx
 
 
 # --- Library views --------------------------------------------------------

@@ -190,6 +190,7 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
                 text=state.translation,
                 model=_llm(config).model_name,
                 critic_passes=state.critic_passes,
+                translated_by=config["configurable"].get("translated_by"),
             )
     log.info(
         "graph.persist",
@@ -239,6 +240,7 @@ async def run_translation_graph(
     source_lang: str,
     target_lang: str,
     chapter_idx: int,
+    translated_by: int | None = None,
 ) -> TranslateState:
     graph = build_translation_graph()
     init = TranslateState(
@@ -248,7 +250,7 @@ async def run_translation_graph(
         target_lang=target_lang,
         chapter_idx=chapter_idx,
     )
-    final = await graph.ainvoke(init, config={"configurable": {"llm": llm}})
+    final = await graph.ainvoke(init, config={"configurable": {"llm": llm, "translated_by": translated_by}})
     # LangGraph returns a dict-like snapshot; merge it back into a dataclass.
     if isinstance(final, dict):
         out = TranslateState(

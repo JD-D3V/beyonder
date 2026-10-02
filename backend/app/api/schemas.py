@@ -96,6 +96,8 @@ class TranslateIn(BaseModel):
     novel_id: int
     chapter_idx: int
     target_lang: str = "en"
+    # Admin only: overwrite an existing complete translation.
+    force: bool = False
 
 
 class TranslateResult(BaseModel):
@@ -111,6 +113,9 @@ class TranslateStepIn(BaseModel):
     novel_id: int
     chapter_idx: int
     target_lang: str = "en"
+    # Admin only: discard a complete translation and start over. Send it on the
+    # first call only; later calls resume the partial it created.
+    force: bool = False
 
 
 class TranslateStepResult(BaseModel):
@@ -126,7 +131,8 @@ class TranslateStepResult(BaseModel):
 class AskIn(BaseModel):
     novel_id: int
     question: str
-    current_chapter: int
+    # Ignored: the server uses the stored per-account position.
+    current_chapter: Optional[int] = None
     answer_lang: str = "en"
     top_k: int = 8
 

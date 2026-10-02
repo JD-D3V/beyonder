@@ -90,6 +90,7 @@ async def translate_step(
     chapter_idx: int,
     target_lang: str = "en",
     time_budget_s: float = STEP_BUDGET_S,
+    translated_by: int | None = None,
 ) -> StepResult:
     # --- load current state in one short session -------------------------
     with get_session() as s:
@@ -120,6 +121,7 @@ async def translate_step(
             upsert_translation(
                 s, chapter_id=chap_id, target_lang=target_lang, text="",
                 model=llm.model_name, critic_passes=0, pieces_done=None,
+                translated_by=translated_by,
             )
         return StepResult(chapter_idx, 0, 0, True)
 
@@ -173,6 +175,7 @@ async def translate_step(
                 s, chapter_id=chap_id, target_lang=target_lang, text=acc,
                 model=llm.model_name, critic_passes=0,
                 pieces_done=(None if done == total else done),
+                translated_by=translated_by,
             )
         if done < total and (time.monotonic() - t0) >= time_budget_s:
             break
