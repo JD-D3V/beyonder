@@ -45,7 +45,7 @@ export default function Nav() {
   useEffect(() => {
     const onUnauthorized = () => {
       if (pathname.startsWith("/login")) return;
-      const here = pathname + window.location.search;
+      const here = pathname + window.location.search + window.location.hash;
       router.replace(`/login?next=${encodeURIComponent(here)}`);
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);

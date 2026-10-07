@@ -8,10 +8,20 @@ export const UNAUTHORIZED_EVENT = "beyonder:unauthorized";
 
 // A post-login destination is only honoured if it is a same-site path.
 export function safeNext(next: string | null | undefined): string | null {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
-    return null;
+  const fallback = "/";
+  if (typeof window === "undefined") return fallback;
+  if (!next) return fallback;
+  // Browsers strip tab/CR/LF inside URLs, so "/\t/evil.com" would become
+  // "//evil.com". Reject control characters and backslashes outright.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(next)) return fallback;
+  try {
+    const u = new URL(next, window.location.origin);
+    if (u.origin !== window.location.origin) return fallback;
+    return u.pathname + u.search + u.hash;
+  } catch {
+    return fallback;
   }
-  return next;
 }
 
 export interface SessionUser {
