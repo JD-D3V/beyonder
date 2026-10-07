@@ -443,19 +443,6 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; }
 .translate-box { margin: 0 0 18px; }
 .translate-box button { display: inline-flex; align-items: center; gap: 6px; }
 .new-terms { color: var(--good); margin: 0 0 12px; }
-.reader-settings {
-  max-width: 420px;
-  margin: 0 0 14px auto;
-  border: 1px solid var(--r-border);
-  border-radius: 12px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.rs-head { display: flex; justify-content: space-between; align-items: center; }
-.rs-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
-.rs-row input[type="range"] { width: 55%; padding: 0; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .lib-actions { padding-top: 0; }
