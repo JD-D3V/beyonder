@@ -111,6 +111,25 @@ def _point_id(novel_id: int, chapter_id: int, char_start: int) -> int:
     return int.from_bytes(h, "big") & 0x7FFFFFFFFFFFFFFF
 
 
+def delete_novel_chunks(novel_id: int) -> None:
+    """Drop every vector of one novel (used before re-embedding it)."""
+    store = get_qdrant()
+    if not store.client.collection_exists(store.collection):
+        return
+    store.client.delete(
+        collection_name=store.collection,
+        points_selector=qm.FilterSelector(
+            filter=qm.Filter(
+                must=[
+                    qm.FieldCondition(
+                        key="novel_id", match=qm.MatchValue(value=novel_id)
+                    )
+                ]
+            )
+        ),
+    )
+
+
 def upsert_chunks(
     *,
     novel_id: int,

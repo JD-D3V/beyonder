@@ -1,12 +1,12 @@
 # Beyonder launcher for macOS/Linux (mirrors run.ps1).
-# Usage: make up | migrate | backend | frontend | frontend-build | test | admin | reembed | down | doctor
+# Usage: make up | migrate | backend | frontend | frontend-build | test | admin | reembed | merge-parts | down | doctor
 # The host never runs npm or node: frontend targets go through docker compose only.
 
 COMPOSE := docker compose -f docker-compose.yml
 VENV    := backend/.venv
 PY      := $(VENV)/bin/python
 
-.PHONY: up migrate backend frontend frontend-build test admin reembed down doctor venv env
+.PHONY: up migrate backend frontend frontend-build test admin reembed merge-parts down doctor venv env
 
 env:
 	@test -f .env || { echo ".env missing - copying from .env.example"; cp .env.example .env; \
@@ -45,6 +45,11 @@ admin: env venv
 
 reembed: env venv
 	cd backend && .venv/bin/python -m app.scripts.reembed
+
+# Fold "Title", "Title (2)", ... chapter runs into one chapter.
+# make merge-parts ARGS="--dry-run" (or ARGS="--novel 3")
+merge-parts: env venv
+	cd backend && .venv/bin/python -m app.scripts.merge_parts $(ARGS)
 
 down:
 	$(COMPOSE) down
