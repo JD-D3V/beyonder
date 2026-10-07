@@ -14,16 +14,21 @@ _SECRET_KEYS = {
 }
 
 
-def _redact(value):
+_MAX_REDACT_DEPTH = 8
+
+
+def _redact(value, _depth: int = 0):
+    if isinstance(value, (dict, list, tuple)) and _depth >= _MAX_REDACT_DEPTH:
+        return f"<{type(value).__name__}…>"
     if isinstance(value, dict):
         return {
-            k: "***" if str(k).lower() in _SECRET_KEYS else _redact(v)
+            k: "***" if str(k).lower() in _SECRET_KEYS else _redact(v, _depth + 1)
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_redact(v) for v in value]
+        return [_redact(v, _depth + 1) for v in value]
     if isinstance(value, tuple):
-        return tuple(_redact(v) for v in value)
+        return tuple(_redact(v, _depth + 1) for v in value)
     return value
 
 
