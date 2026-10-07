@@ -209,6 +209,8 @@ async def scrape_many(urls: list[str], concurrency: int = 3) -> list[ScrapedPage
         async with sem:
             try:
                 return await scrape_url(u)
+            except UnsafeURL:
+                raise  # a blocked URL is the caller's error, not "empty text"
             except Exception as e:
                 log.error("scrape.fail", url=u, err=str(e))
                 return ScrapedPage(url=u, title=None, text="")

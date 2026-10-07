@@ -215,6 +215,8 @@ class TranslateBatchIn(BaseModel):
 
 class TranslateBatchResult(BaseModel):
     translated: list[int] = Field(default_factory=list)
+    # Chapters someone else finished while we worked; ours was not saved.
+    lost_race: list[int] = Field(default_factory=list)
     remaining: int = 0
     done: bool = False
     # Set when the run stopped early. Chapters already finished are still saved.
