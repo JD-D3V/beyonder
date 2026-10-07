@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { IconChevronLeft, IconFileText, IconLink, IconUpload } from "../../components/icons";
-import { api } from "../../lib/api";
+import { api, errorText } from "../../lib/api";
 
 type Mode = "file" | "paste" | "url";
 
@@ -89,7 +89,7 @@ export default function ImportPage() {
       setDone("Saved. Opening the book...");
       router.push(`/novel?id=${novelId}`);
     } catch (e) {
-      setErr(String(e instanceof Error ? e.message : e));
+      setErr(errorText(e));
     } finally {
       setBusy(false);
     }

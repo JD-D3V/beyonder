@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, KgEdge, KgNode, KgOut } from "../../lib/api";
+import { api, errorText, KgEdge, KgNode, KgOut } from "../../lib/api";
 
 interface Pos {
   x: number;
@@ -95,13 +95,14 @@ function KgInner() {
   const params = useSearchParams();
   const novelId = Number(params.get("novel") || "0");
   const upToParam = params.get("up_to");
-  const upTo = upToParam === null || upToParam === "" ? undefined : Number(upToParam);
+  const upToNum = upToParam === null || upToParam.trim() === "" ? NaN : Number(upToParam);
+  const upTo = Number.isFinite(upToNum) && upToNum >= 0 ? upToNum : undefined;
   const [data, setData] = useState<KgOut | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!novelId) return;
-    api.kg(novelId, upTo).then(setData).catch((e) => setErr(String(e)));
+    api.kg(novelId, upTo).then(setData).catch((e) => setErr(errorText(e)));
   }, [novelId, upTo]);
 
   const W = 900;

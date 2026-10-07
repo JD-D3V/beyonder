@@ -28,7 +28,14 @@ export default function GlossaryText({
       if (t.target_term && !byTarget.has(t.target_term)) byTarget.set(t.target_term, t);
     }
     if (byTarget.size === 0) return [text];
-    const sorted = [...byTarget.keys()].sort((a, b) => b.length - a.length);
+    // First character -> candidate terms, longest first, so each position only
+    // checks terms that could start there.
+    const byFirst = new Map<string, string[]>();
+    for (const term of [...byTarget.keys()].sort((a, b) => b.length - a.length)) {
+      const list = byFirst.get(term[0]);
+      if (list) list.push(term);
+      else byFirst.set(term[0], [term]);
+    }
 
     const out: ReactNode[] = [];
     let buf = "";
@@ -36,7 +43,7 @@ export default function GlossaryText({
     let key = 0;
     while (i < text.length) {
       let hit: string | null = null;
-      for (const term of sorted) {
+      for (const term of byFirst.get(text[i]) ?? []) {
         if (
           text.startsWith(term, i) &&
           boundaryOk(text, i, i + term.length, term)

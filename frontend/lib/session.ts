@@ -3,6 +3,16 @@
 
 const KEY = "beyonder.session";
 export const SESSION_EVENT = "beyonder:session";
+// Fired on any 401 so the Nav can send the reader to the sign-in page.
+export const UNAUTHORIZED_EVENT = "beyonder:unauthorized";
+
+// A post-login destination is only honoured if it is a same-site path.
+export function safeNext(next: string | null | undefined): string | null {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
+    return null;
+  }
+  return next;
+}
 
 export interface SessionUser {
   id: number;
@@ -33,6 +43,15 @@ export function getSession(): Session | null {
     return s;
   } catch {
     return null;
+  }
+}
+
+export function announceUnauthorized(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+  } catch {
+    // ignore
   }
 }
 

@@ -1,5 +1,5 @@
 import { getLlmConfig } from "./llmKey";
-import { clearSession, getSession } from "./session";
+import { announceUnauthorized, clearSession, getSession } from "./session";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -37,9 +37,16 @@ export class UnauthorizedError extends Error {
   }
 }
 
-// Only these routes receive the user's AI key.
+// Text to show a user for a caught error: the message, without a class prefix.
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+const AI_ROUTES = new Set(["/ask", "/translate", "/translate/batch", "/translate/step"]);
+
+// Only these routes receive the user's AI key (query string ignored).
 function isAiRoute(path: string): boolean {
-  return path === "/ask" || path.startsWith("/translate");
+  return AI_ROUTES.has(path.split("?")[0]);
 }
 
 function authHeaders(): Record<string, string> {
@@ -94,6 +101,7 @@ async function check(res: Response, signedIn: boolean): Promise<void> {
   if (res.status === 401) {
     // Only wipe the session if we had sent one; a failed login is also a 401.
     if (signedIn) clearSession();
+    announceUnauthorized();
     throw new UnauthorizedError(msg);
   }
   throw new ApiError(msg, res.status, errorCode(body));

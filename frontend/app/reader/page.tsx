@@ -32,6 +32,7 @@ import {
   ChapterDetail,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  errorText,
   GlossaryEntry,
   KeyRequiredError,
   Novel,
@@ -136,7 +137,7 @@ function ReaderInner() {
         return c;
       } catch (e) {
         if (!isCurrent()) return;
-        setErr(String(e));
+        setErr(errorText(e));
         setChapter(null);
       }
     },
@@ -145,7 +146,7 @@ function ReaderInner() {
 
   useEffect(() => {
     if (!novelId) return;
-    api.getNovel(novelId).then(setNovel).catch((e) => setErr(String(e)));
+    api.getNovel(novelId).then(setNovel).catch((e) => setErr(errorText(e)));
     api.listChapters(novelId).then(setChapters).catch(() => undefined);
   }, [novelId]);
 
@@ -236,7 +237,7 @@ function ReaderInner() {
       else await api.setShelf(novelId, "reading");
       setOnReading(!onReading);
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }
 
@@ -304,7 +305,7 @@ function ReaderInner() {
       else if (e instanceof ApiError && e.code === "llm_rate_limited")
         setErr("The AI provider is rate-limiting your key, try again in a minute.");
       else if (e instanceof ApiError && e.code === "llm_key_invalid") setKeyRejected(true);
-      else setErr(e instanceof Error ? e.message : String(e));
+      else setErr(errorText(e));
     }
     if (!live()) return;
     if (reload) {
@@ -333,7 +334,7 @@ function ReaderInner() {
       else if (e instanceof ApiError && e.code === "llm_key_invalid") setAskKeyRejected(true);
       else if (e instanceof ApiError && e.code === "llm_rate_limited")
         setAskErr("The AI provider is rate-limiting your key, try again in a minute.");
-      else setAskErr(e instanceof Error ? e.message : String(e));
+      else setAskErr(errorText(e));
     } finally {
       setAsking(false);
     }

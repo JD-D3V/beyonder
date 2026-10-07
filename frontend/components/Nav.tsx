@@ -5,7 +5,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { IconLogIn, IconLogOut, IconSettings } from "./icons";
-import { clearSession, getSession, SESSION_EVENT, type Session } from "../lib/session";
+import {
+  clearSession,
+  getSession,
+  SESSION_EVENT,
+  UNAUTHORIZED_EVENT,
+  type Session,
+} from "../lib/session";
 
 const LINKS = [
   { href: "/", label: "Catalog" },
@@ -33,6 +39,18 @@ export default function Nav() {
       window.removeEventListener("storage", sync);
     };
   }, []);
+
+  // A 401 anywhere (expired session, or an action that needs one) sends the
+  // reader to sign in, then back to where they were.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      if (pathname.startsWith("/login")) return;
+      const here = pathname + window.location.search;
+      router.replace(`/login?next=${encodeURIComponent(here)}`);
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, [pathname, router]);
 
   async function signOut() {
     try {

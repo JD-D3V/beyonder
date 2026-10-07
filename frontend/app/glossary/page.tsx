@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, GlossaryEntry } from "../../lib/api";
+import { api, errorText, GlossaryEntry } from "../../lib/api";
 
 function GlossaryInner() {
   const params = useSearchParams();
   const novelId = Number(params.get("novel") || "0");
   const upToParam = params.get("up_to");
-  const upTo = upToParam === null || upToParam === "" ? undefined : Number(upToParam);
+  const upToNum = upToParam === null || upToParam.trim() === "" ? NaN : Number(upToParam);
+  const upTo = Number.isFinite(upToNum) && upToNum >= 0 ? upToNum : undefined;
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -17,7 +18,7 @@ function GlossaryInner() {
 
   useEffect(() => {
     if (!novelId) return;
-    api.glossary(novelId, upTo).then(setEntries).catch((e) => setErr(String(e)));
+    api.glossary(novelId, upTo).then(setEntries).catch((e) => setErr(errorText(e)));
   }, [novelId, upTo]);
 
   if (!novelId) {
