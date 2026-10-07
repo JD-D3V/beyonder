@@ -144,7 +144,10 @@ def test_ingest_url_unsafe_is_400_with_code():
         app.dependency_overrides.clear()
     assert r.status_code == 400
     d = r.json()["detail"]
-    assert d["code"] == "unsafe_url" and d["detail"]
+    assert d["code"] == "unsafe_url"
+    assert d["detail"] == (
+        "This URL can't be imported (only public http/https addresses are allowed)."
+    )
 
 
 async def test_scrape_many_propagates_unsafe_but_swallows_other(monkeypatch):

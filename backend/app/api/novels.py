@@ -367,8 +367,14 @@ async def ingest_url(
     try:
         pages = await scrape_many(body.urls, concurrency=2)
     except UnsafeURL as e:
+        # Specific reason stays in the log only (avoids a DNS/network oracle).
+        log.warning("ingest_url.unsafe_url", reason=str(e))
         raise HTTPException(
-            400, detail={"code": "unsafe_url", "detail": f"URL not allowed: {e}"}
+            400,
+            detail={
+                "code": "unsafe_url",
+                "detail": "This URL can't be imported (only public http/https addresses are allowed).",
+            },
         )
     combined = "\n\n".join(p.text for p in pages if p.text)
     if not combined.strip():
