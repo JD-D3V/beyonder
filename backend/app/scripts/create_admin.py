@@ -24,6 +24,12 @@ def create_admin(s: Session, email: str, password: str) -> User:
         raise SystemExit("ADMIN_PASSWORD must be at least 8 characters.")
     if s.execute(select(User.id).where(User.is_admin.is_(True)).limit(1)).first():
         raise SystemExit("An admin already exists; refusing to create another.")
+    existing = s.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing is not None:
+        raise SystemExit(
+            f"{email} is already registered as a non-admin user; use a different "
+            "ADMIN_EMAIL or promote/delete that account first."
+        )
     user = User(email=email, password_hash=hash_password(password), is_admin=True)
     s.add(user)
     s.flush()

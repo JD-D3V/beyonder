@@ -62,15 +62,18 @@ def client_ip(request: Request) -> str:
     """The caller's address for throttling.
 
     Behind a reverse proxy request.client.host is the proxy, so every user
-    would share one bucket. X-Forwarded-For is only read when
-    settings.trust_proxy is set (Render sets it); the right-most entry is the
-    one our proxy appended, the rest are client-supplied and spoofable.
+    would share one bucket. With settings.trust_proxy_hops = N, the Nth entry
+    from the right of X-Forwarded-For is used: each trusted proxy appends the
+    address it saw, so entries left of that are client-supplied and spoofable.
+    0 ignores the header; a header with fewer than N entries falls back to
+    the socket peer.
     """
-    if settings.trust_proxy:
+    hops = settings.trust_proxy_hops
+    if hops > 0:
         fwd = request.headers.get("x-forwarded-for", "")
         parts = [p.strip() for p in fwd.split(",") if p.strip()]
-        if parts:
-            return parts[-1]
+        if len(parts) >= hops:
+            return parts[-hops]
     return request.client.host if request.client else "unknown"
 
 
@@ -115,6 +118,7 @@ async def login(body: LoginIn, request: Request) -> dict:
         ok = await _verify(body.password, user.password_hash if user else _DUMMY_HASH)
         if user is None or not ok:
             raise HTTPException(status_code=401, detail=_BAD_LOGIN)
+        sessions.prune_sessions(s, user.id)
         return {"token": sessions.create_session(s, user), "user": _user_out(user)}
 
 
@@ -127,7 +131,7 @@ async def signup(body: SignupIn, request: Request) -> dict:
     invalid = HTTPException(status_code=400, detail="Invalid or expired invite.")
     with get_session() as s:
         inv = s.get(Invite, body.invite)
-        if inv is None or inv.used_by is not None or inv.expires_at <= now:
+        if inv is None or inv.used_by is not None or inv.used_at is not None or inv.expires_at <= now:
             raise invalid
         user = User(email=email, password_hash=await _hash(body.password))
         s.add(user)
@@ -142,9 +146,10 @@ async def signup(body: SignupIn, request: Request) -> dict:
             .where(
                 Invite.code == body.invite,
                 Invite.used_by.is_(None),
+                Invite.used_at.is_(None),
                 Invite.expires_at > now,
             )
-            .values(used_by=user.id)
+            .values(used_by=user.id, used_at=now)
         )
         if claimed.rowcount != 1:
             s.rollback()
@@ -186,7 +191,7 @@ async def list_invites(_admin: User = Depends(require_admin)) -> list[dict]:
         return [
             {
                 "code": i.code,
-                "used": i.used_by is not None,
+                "used": i.used_by is not None or i.used_at is not None,
                 "expires_at": i.expires_at.isoformat(),
             }
             for i in rows

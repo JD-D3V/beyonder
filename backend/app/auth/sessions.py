@@ -34,6 +34,31 @@ def create_session(s: Session, user: User) -> str:
     return token
 
 
+MAX_SESSIONS_PER_USER = 10
+
+
+def prune_sessions(s: Session, user_id: int, cap: int = MAX_SESSIONS_PER_USER) -> None:
+    """Drop the user's expired sessions, then keep at most ``cap - 1`` live
+    ones (the oldest go first) so the session about to be created fits."""
+    now = datetime.now(timezone.utc)
+    s.execute(
+        delete(UserSession).where(
+            UserSession.user_id == user_id, UserSession.expires_at <= now
+        )
+    )
+    keep = max(cap - 1, 0)
+    stale = (
+        select(UserSession.token_hash)
+        .where(UserSession.user_id == user_id)
+        .order_by(UserSession.expires_at.desc(), UserSession.token_hash)
+        .offset(keep)
+    )
+    stale_hashes = list(s.execute(stale).scalars())
+    if stale_hashes:
+        s.execute(delete(UserSession).where(UserSession.token_hash.in_(stale_hashes)))
+    s.flush()
+
+
 def user_for_token(s: Session, token: str) -> User | None:
     if not token:
         return None

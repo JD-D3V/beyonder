@@ -59,7 +59,17 @@ Alembic revision; nothing in the deployed container migrates on boot.
    only read by the `create_admin` step below, so you can remove them from the
    dashboard afterwards. Reading is public; everyone else needs an invite
    (`POST /admin/invites` as admin) and their own AI key.
-5. Deploy. Health is `GET /health`; interactive docs are at `/docs`.
+5. `TRUST_PROXY_HOPS` (preset to `1` in render.yaml) is how many trusted
+   proxies sit in front of the API. The login throttle uses the Nth entry from
+   the right of `X-Forwarded-For` (the address the outermost trusted proxy
+   appended); entries to its left are client-supplied. `0` ignores the header
+   and uses the socket peer, which behind a proxy puts every user in one
+   bucket. `1` is an assumption about Render: log `X-Forwarded-For` once from
+   a real request and confirm the right-most entry is your own IP (and that
+   the count of proxy-appended entries matches), otherwise the throttle keys
+   on the wrong address. If the header has fewer than N entries, the socket
+   peer is used. The old `TRUST_PROXY` setting is gone.
+6. Deploy. Health is `GET /health`; interactive docs are at `/docs`.
 
 Note the service URL, e.g. `https://beyonder-api.onrender.com`.
 
@@ -153,6 +163,9 @@ translation and Q&A return `402 llm_key_required`; ingestion and embedding
 
 ## Operating notes
 
+- **Sessions.** Each login deletes that user's expired sessions and keeps at
+  most 10 live ones (the oldest are dropped). Invites are single-use for good:
+  claiming sets `used_at`, so deleting the invitee does not free the code.
 - **Scraping.** The deployed API runs `SCRAPER_BACKEND=http`: one plain fetch,
   no browser, because Chromium does not fit in a 512 MB instance. Sites that
   build their chapters in JavaScript come back empty there. Run locally with
