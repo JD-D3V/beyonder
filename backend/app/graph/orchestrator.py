@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from ..agents.critic import critique_translation
 from ..agents.extractor import extract_terms_from_chapter
 from ..agents.relation import extract_relations_from_chapter
-from ..agents.translator import translate_chapter
+from ..agents.translator import translate_chapter, translate_title
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
 from ..llm.client import LLMClient, LLMError
@@ -25,12 +25,14 @@ from ..review.checks import deterministic_flags
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
+    get_novel,
     get_terms_for_chapters,
     insert_relations,
     insert_seed_terms,
     load_variants,
     replace_open_flags,
     term_dicts,
+    update_novel,
     upsert_terms,
     upsert_translation,
 )
@@ -47,12 +49,17 @@ class TranslateState:
     chapter_idx: int
     chapter_text: str = ""
     chapter_db_id: int | None = None
+    chapter_title: str | None = None
+    # The book title still needs translating (chapter 0 of a novel without one).
+    need_novel_title: bool = False
 
     # populated as we go
     glossary: list[tuple[str, str]] = field(default_factory=list)
     new_terms: list[dict] = field(default_factory=list)
     relations: list[dict] = field(default_factory=list)
     translation: str = ""
+    title_en: str | None = None
+    novel_title_en: str | None = None
     critic_passes: int = 0
     flags: list[dict] = field(default_factory=list)
     variants: dict[str, list[str]] = field(default_factory=dict)
@@ -92,7 +99,13 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
         )
         gloss = [(t.source_term, t.target_term) for t in terms]
         variants = load_variants(s, state.novel_id)
+        novel = get_novel(s, state.novel_id)
+        need_novel_title = (
+            state.chapter_idx == 0 and novel is not None and not novel.title_en
+        )
     return {
+        "chapter_title": chap.title,
+        "need_novel_title": need_novel_title,
         "chapter_text": chap.source_text,
         "chapter_db_id": chap.id,
         "glossary": gloss,
@@ -155,7 +168,23 @@ async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[
         pair = (t["source_term"], t["target_term"])
         if pair not in merged_gloss:
             merged_gloss.append(pair)
+    # Titles use the finished glossary. LLMError propagates; other failures
+    # leave the title unset (translate_title logs them).
+    title_en = None
+    if state.chapter_title and state.chapter_title.strip():
+        title_en = (
+            await translate_title(_llm(config), state.chapter_title, merged_gloss)
+            or None
+        )
+    novel_title_en = None
+    if state.need_novel_title and state.novel_title.strip():
+        novel_title_en = (
+            await translate_title(_llm(config), state.novel_title, merged_gloss)
+            or None
+        )
     return {
+        "title_en": title_en,
+        "novel_title_en": novel_title_en,
         "translation": result.translation,
         "new_terms": merged_new,
         "glossary": merged_gloss,
@@ -252,7 +281,12 @@ async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[st
                 critic_passes=state.critic_passes,
                 translated_by=config["configurable"].get("translated_by"),
                 overwrite=bool(config["configurable"].get("overwrite", False)),
+                title=state.title_en,
             )
+            if wrote and state.novel_title_en:
+                novel = get_novel(s, state.novel_id)
+                if novel is not None and not novel.title_en:
+                    update_novel(s, state.novel_id, title_en=state.novel_title_en)
             if wrote:
                 replace_open_flags(
                     s, state.novel_id, state.chapter_idx, state.flags

@@ -48,7 +48,7 @@ async def test_resumable_step_uses_given_client(monkeypatch):
     chap = SimpleNamespace(source_text="你好", id=1)
     monkeypatch.setattr(resumable, "get_session", lambda: _S())
     monkeypatch.setattr(resumable, "get_chapter_by_idx", lambda s, n, i: chap)
-    monkeypatch.setattr(resumable, "get_novel", lambda s, n: SimpleNamespace(title="T"))
+    monkeypatch.setattr(resumable, "get_novel", lambda s, n: SimpleNamespace(title="T", title_en="x"))
     monkeypatch.setattr(resumable, "get_translation", lambda s, **k: None)
     monkeypatch.setattr(resumable, "get_terms_for_chapters", lambda *a, **k: [])
     monkeypatch.setattr(resumable, "upsert_terms", lambda *a, **k: None)

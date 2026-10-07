@@ -11,6 +11,7 @@ class NovelOut(BaseModel):
 
     id: int
     title: str
+    title_en: Optional[str] = None
     author: Optional[str] = None
     description: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
@@ -43,6 +44,7 @@ class NovelPatch(BaseModel):
     """Edit book metadata. Omitted fields are left alone."""
 
     title: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    title_en: Optional[str] = Field(default=None, max_length=512)
     author: Optional[str] = Field(default=None, max_length=256)
     description: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -55,6 +57,7 @@ class ChapterOut(BaseModel):
 
     idx: int
     title: Optional[str] = None
+    title_en: Optional[str] = None
     char_count: int = 0
     translated: bool = False  # complete only
     # Set while a resumable translation is mid-flight (pieces done so far).
@@ -66,6 +69,7 @@ class ChapterDetail(BaseModel):
 
     idx: int
     title: Optional[str] = None
+    title_en: Optional[str] = None
     char_count: int = 0
     source_text: str
     translation: Optional[str] = None
@@ -122,6 +126,7 @@ class TranslateResult(BaseModel):
     translation: str
     new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
     critic_passes: int
+    title_en: Optional[str] = None
 
 
 class TranslateStepIn(BaseModel):
@@ -145,6 +150,12 @@ class TranslateStepResult(BaseModel):
     stalled: bool = False
     # Terms first persisted this call (seed hits and any the model found).
     new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
+    title_en: Optional[str] = None
+
+
+class TitlesTranslateResult(BaseModel):
+    chapters: int
+    novel: bool
 
 
 class AskIn(BaseModel):

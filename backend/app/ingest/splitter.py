@@ -33,7 +33,7 @@ _EN_CHAPTER_RE = re.compile(
 _FALLBACK_CHARS = 6000  # ~one web-novel chapter
 
 # Past this, a "chapter" is really an unsplit book and gets broken up anyway.
-_OVERSIZE_CHARS = _FALLBACK_CHARS * 2
+_BOOK_SIZED_CHARS = 60_000
 
 _PARA_BREAK = "\n\n"
 
@@ -114,7 +114,7 @@ def split_chapters(text: str) -> list[ParsedChapter]:
         # a plausible chapter now gets broken up however it was found.
         pieces = (
             _split_by_length(body, title)
-            if len(body) > _OVERSIZE_CHARS
+            if len(body) > _BOOK_SIZED_CHARS
             else [ParsedChapter(idx=0, title=title, text=body)]
         )
         for piece in pieces:
