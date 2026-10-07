@@ -30,3 +30,14 @@ def db_session():
     Base.metadata.drop_all(engine)
     db._engine = None
     db._SessionLocal = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttles():
+    """Login limits are process-wide; without a reset, later tests that log in
+    as the same email hit the 5-per-window cap left over from earlier ones."""
+    from app.api.auth_routes import reset_throttles
+
+    reset_throttles()
+    yield
+    reset_throttles()
