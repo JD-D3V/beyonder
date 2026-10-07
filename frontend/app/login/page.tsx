@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { IconLogIn, IconUser } from "../../components/icons";
 import { api } from "../../lib/api";
-import { setSession } from "../../lib/session";
+import { safeNext, setSession } from "../../lib/session";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -25,7 +25,8 @@ export default function LoginPage() {
           ? await api.login({ email: email.trim(), password })
           : await api.signup({ email: email.trim(), password, invite: invite.trim() });
       setSession({ token: r.token, user: r.user });
-      router.push("/");
+      const next = safeNext(new URLSearchParams(window.location.search).get("next"));
+      router.push(next || "/");
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Something went wrong.");
     } finally {
@@ -56,8 +57,10 @@ export default function LoginPage() {
             value={password}
             autoComplete={mode === "signin" ? "current-password" : "new-password"}
             required
+            minLength={mode === "signup" ? 8 : undefined}
             onChange={(e) => setPassword(e.target.value)}
           />
+          {mode === "signup" && <div className="muted small">At least 8 characters</div>}
         </div>
         {mode === "signup" && (
           <div className="field">

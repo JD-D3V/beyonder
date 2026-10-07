@@ -20,6 +20,7 @@ import {
   api,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  errorText,
   GlossaryEntry,
   Novel,
   ReviewFlag,
@@ -116,7 +117,7 @@ function BookInner() {
       setLang(n.source_lang);
       setDescription(n.description || "");
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }, [novelId]);
 
@@ -159,14 +160,14 @@ function BookInner() {
   useEffect(() => {
     if (!novelId) return;
     if (tab === "glossary" && glossary === null) {
-      api.glossary(novelId).then(setGlossary).catch((e) => setErr(String(e)));
+      api.glossary(novelId).then(setGlossary).catch((e) => setErr(errorText(e)));
     }
   }, [novelId, tab, glossary]);
 
   useEffect(() => {
     if (!novelId || tab !== "flags") return;
     setFlags(null);
-    api.flags(novelId, flagStatus).then(setFlags).catch((e) => setErr(String(e)));
+    api.flags(novelId, flagStatus).then(setFlags).catch((e) => setErr(errorText(e)));
   }, [novelId, tab, flagStatus]);
 
   async function changeShelf(value: string) {
@@ -177,7 +178,7 @@ function BookInner() {
       else await api.removeFromLibrary(novelId);
     } catch (e) {
       setShelf(prev);
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }
 
@@ -187,7 +188,7 @@ function BookInner() {
       await api.resolveFlag(f.id, (wrongInputs[f.id] || "").trim() || undefined);
       setFlags((cur) => (cur ? cur.filter((x) => x.id !== f.id) : cur));
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }
 
@@ -219,7 +220,7 @@ function BookInner() {
         return rest;
       });
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }
 
@@ -242,7 +243,7 @@ function BookInner() {
       setNote("Saved.");
       await load();
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -256,7 +257,7 @@ function BookInner() {
       const res = await api.embed({ novel_id: novelId });
       setNote(`Indexed ${res.points} passages. Questions can search this book now.`);
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -324,7 +325,7 @@ function BookInner() {
         );
       }
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
       setProgressNote(`Stopped after ${done}. Saved progress is kept.`);
     } finally {
       setRunning(false);
@@ -350,7 +351,7 @@ function BookInner() {
       await api.deleteNovel(novelId);
       router.push("/");
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
       setBusy(false);
     }
   }

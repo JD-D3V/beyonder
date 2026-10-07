@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import BookCover from "../../components/BookCover";
 import { IconBookOpen, IconX } from "../../components/icons";
-import { api, LibraryItem, LibraryOut, Shelf } from "../../lib/api";
+import { api, errorText, LibraryItem, LibraryOut, Shelf } from "../../lib/api";
 import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
 
 const SHELVES: { key: Shelf; label: string }[] = [
@@ -38,7 +38,7 @@ function LibraryBody() {
     try {
       setLib(await api.library());
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }, []);
 
@@ -54,7 +54,7 @@ function LibraryBody() {
       await api.setShelf(n.id, to);
       await load();
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusyId(null);
     }
@@ -67,7 +67,7 @@ function LibraryBody() {
       await api.removeFromLibrary(n.id);
       await load();
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusyId(null);
     }

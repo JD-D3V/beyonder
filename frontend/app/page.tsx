@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../components/BookCover";
 import { IconArrowUpDown, IconChevronDown, IconSearch, IconSlidersHorizontal, IconUpload, IconX } from "../components/icons";
-import { api, Novel, NovelQuery } from "../lib/api";
+import { api, errorText, Novel, NovelQuery } from "../lib/api";
 
 const PAGE_SIZE = 24;
 
@@ -104,7 +104,7 @@ function CatalogInner() {
         setHasMore(rows.length === PAGE_SIZE);
       })
       .catch((e) => {
-        if (id === reqId.current) setErr(String(e));
+        if (id === reqId.current) setErr(errorText(e));
       })
       .finally(() => {
         if (id === reqId.current) setLoading(false);
@@ -120,7 +120,7 @@ function CatalogInner() {
       setNovels((prev) => [...prev, ...rows]);
       setHasMore(rows.length === PAGE_SIZE);
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setLoadingMore(false);
     }
