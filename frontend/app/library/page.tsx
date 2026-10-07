@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import BookCover from "../../components/BookCover";
 import { IconBookOpen, IconX } from "../../components/icons";
-import { api, errorText, LibraryItem, LibraryOut, Shelf } from "../../lib/api";
+import { api, displayTitle, errorText, LibraryItem, LibraryOut, Shelf } from "../../lib/api";
 import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
 
 const SHELVES: { key: Shelf; label: string }[] = [
@@ -128,9 +128,9 @@ function LibraryBody() {
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={n.title} id={n.id} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} />
                 <div className="body">
-                  <div className="title">{n.title}</div>
+                  <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
                   <div className="meter" aria-hidden="true">
                     <span style={{ width: `${pct}%` }} />
@@ -167,7 +167,7 @@ function LibraryBody() {
                     className="secondary icon-btn"
                     onClick={() => remove(n)}
                     disabled={busyId === n.id}
-                    aria-label={`Remove ${n.title} from library`}
+                    aria-label={`Remove ${displayTitle(n.title, n.title_en).text} from library`}
                     title="Remove from library"
                   >
                     <IconX size={14} />

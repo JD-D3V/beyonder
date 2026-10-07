@@ -20,6 +20,7 @@ import {
   api,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  displayTitle,
   errorText,
   GlossaryEntry,
   Novel,
@@ -95,6 +96,7 @@ function BookInner() {
 
   // Edit form
   const [title, setTitle] = useState("");
+  const [titleEn, setTitleEn] = useState("");
   const [author, setAuthor] = useState("");
   const [tags, setTags] = useState("");
   const [status, setStatus] = useState("ongoing");
@@ -111,6 +113,7 @@ function BookInner() {
       setNovel(n);
       setChapters(ch);
       setTitle(n.title);
+      setTitleEn(n.title_en || "");
       setAuthor(n.author || "");
       setTags(n.tags.join(", "));
       setStatus(n.status);
@@ -230,6 +233,7 @@ function BookInner() {
     try {
       await api.patchNovel(novelId, {
         title: title.trim(),
+        title_en: titleEn.trim(),
         author: author.trim(),
         description: description.trim(),
         tags: tags
@@ -241,6 +245,24 @@ function BookInner() {
       });
       setEditing(false);
       setNote("Saved.");
+      await load();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function translateTitles() {
+    setBusy(true);
+    setErr(null);
+    setNote(null);
+    try {
+      const r = await api.translateTitles(novelId);
+      setNote(
+        `Translated ${r.chapters} chapter title${r.chapters === 1 ? "" : "s"}` +
+          (r.novel ? " and the novel title." : "."),
+      );
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -343,7 +365,7 @@ function BookInner() {
 
   async function remove() {
     const ok = window.confirm(
-      `Delete "${novel?.title}" and every chapter, translation and glossary term that came from it? This cannot be undone.`,
+      `Delete "${novel?.title_en || novel?.title}" and every chapter, translation and glossary term that came from it? This cannot be undone.`,
     );
     if (!ok) return;
     setBusy(true);
@@ -373,19 +395,21 @@ function BookInner() {
   const pct = novel.chapter_count
     ? Math.round((novel.translated_count / novel.chapter_count) * 100)
     : 0;
+  const nt = displayTitle(novel.title, novel.title_en);
   const untranslated = chapters.filter((c) => !c.translated).length;
 
   return (
     <>
       <div className="page-head">
         <div className="small muted">
-          <Link href="/">Library</Link> / {novel.title}
+          <Link href="/">Library</Link> /{" "}
+          <span title={nt.hover}>{nt.text}</span>
         </div>
       </div>
 
       <div className="panel">
         <div className="book-head">
-          <BookCover title={novel.title} id={novel.id} size="lg" />
+          <BookCover title={nt.text} id={novel.id} size="lg" />
           <div className="info">
             {editing ? (
               <>
@@ -396,6 +420,14 @@ function BookInner() {
                       type="text"
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>English title</label>
+                    <input
+                      type="text"
+                      value={titleEn}
+                      onChange={(e) => setTitleEn(e.target.value)}
                     />
                   </div>
                   <div className="field">
@@ -459,7 +491,7 @@ function BookInner() {
               </>
             ) : (
               <>
-                <h1>{novel.title}</h1>
+                <h1 title={nt.hover}>{nt.text}</h1>
                 <div className="muted">{novel.author || "Unknown author"}</div>
                 <div className="pill-row">
                   <span className={`pill status-${novel.status}`}>
@@ -547,6 +579,9 @@ function BookInner() {
                   )}
                   {isAdmin && (
                     <>
+                      <button className="secondary" onClick={translateTitles} disabled={busy}>
+                        <IconLanguages /> <span>{busy ? "Working..." : "Translate titles"}</span>
+                      </button>
                       <button className="secondary" onClick={() => setEditing(true)}>
                         <IconPencil /> <span>Edit details</span>
                       </button>
@@ -745,7 +780,9 @@ function BookInner() {
               href={`/reader?novel=${novel.id}&ch=${c.idx}`}
             >
               <span className="num">{c.idx + 1}</span>
-              <span className="name">{c.title || `Chapter ${c.idx + 1}`}</span>
+              <span className="name" title={displayTitle(c.title, c.title_en).hover}>
+                {displayTitle(c.title, c.title_en).text || `Chapter ${c.idx + 1}`}
+              </span>
               <span className="flag">{compactNumber(c.char_count)}</span>
               <span className={`flag ${c.translated ? "done" : ""}`}>
                 {c.translated

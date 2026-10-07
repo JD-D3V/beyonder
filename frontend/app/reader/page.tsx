@@ -32,6 +32,7 @@ import {
   ChapterDetail,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  displayTitle,
   errorText,
   GlossaryEntry,
   KeyRequiredError,
@@ -243,6 +244,10 @@ function ReaderInner() {
 
   // force: admin re-translate of a complete chapter (the server ignores it for
   // everyone else). It replaces the saved translation for every reader.
+  function applyTitle(en: string | null | undefined) {
+    if (en) setChapter((c) => (c ? { ...c, title_en: en } : c));
+  }
+
   async function translateThis(force = false) {
     if (!chapter) return;
     const token = runToken.current;
@@ -262,6 +267,7 @@ function ReaderInner() {
           ...(force ? { force: true } : {}),
         });
         added += r.new_terms?.length ?? 0;
+        applyTitle(r.title_en);
       } else {
         // Long chapter: resumable, critic-free passes until complete.
         let stalls = 0;
@@ -277,6 +283,7 @@ function ReaderInner() {
           first = false;
           if (!live()) return;
           added += r.new_terms?.length ?? 0;
+          applyTitle(r.title_en);
           if (r.complete) break;
           if (r.stalled) {
             stalls += 1;
@@ -379,7 +386,9 @@ function ReaderInner() {
     );
   }
 
-  const heading = chapter?.title || `Chapter ${chapterIdx + 1}`;
+  const ht = displayTitle(chapter?.title, chapter?.title_en);
+  const heading = ht.text || `Chapter ${chapterIdx + 1}`;
+  const nvt = novel ? displayTitle(novel.title, novel.title_en) : null;
   const cssVars = {
     "--r-font":
       prefs.font === "serif"
@@ -427,11 +436,11 @@ function ReaderInner() {
           {novel && (
             <>
               {" / "}
-              <Link href={`/novel?id=${novel.id}`}>{novel.title}</Link>
+              <Link href={`/novel?id=${novel.id}`} title={nvt?.hover}>{nvt?.text}</Link>
             </>
           )}
           {" / "}
-          {heading}
+          <span title={ht.hover}>{heading}</span>
         </div>
         <div className="row" style={{ gap: 8 }}>
           {flagCount > 0 && novel && (
@@ -514,7 +523,7 @@ function ReaderInner() {
       </div>
 
       <article className="reader-page">
-        <h2 className="reader-title">{heading}</h2>
+        <h2 className="reader-title" title={ht.hover}>{heading}</h2>
         {!chapter && !err && <p className="muted">Loading...</p>}
 
         {chapter && !chapter.complete && (

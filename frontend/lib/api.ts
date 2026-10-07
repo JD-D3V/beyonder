@@ -46,7 +46,8 @@ const AI_ROUTES = new Set(["/ask", "/translate", "/translate/batch", "/translate
 
 // Only these routes receive the user's AI key (query string ignored).
 function isAiRoute(path: string): boolean {
-  return AI_ROUTES.has(path.split("?")[0]);
+  const p = path.split("?")[0];
+  return AI_ROUTES.has(p) || /^\/novels\/\d+\/titles\/translate$/.test(p);
 }
 
 function authHeaders(): Record<string, string> {
@@ -139,6 +140,7 @@ export interface AuthResult {
 export interface Novel {
   id: number;
   title: string;
+  title_en?: string | null;
   author: string | null;
   description: string | null;
   tags: string[];
@@ -154,6 +156,7 @@ export interface Novel {
 export interface ChapterRow {
   idx: number;
   title: string | null;
+  title_en?: string | null;
   char_count: number;
   translated: boolean; // complete only
   pieces_done: number | null; // set while a resumable translation is mid-flight
@@ -162,6 +165,7 @@ export interface ChapterRow {
 export interface ChapterDetail {
   idx: number;
   title: string | null;
+  title_en?: string | null;
   char_count: number;
   source_text: string;
   translation: string | null;
@@ -218,6 +222,7 @@ export interface TranslateResult {
   translation: string;
   new_terms: GlossaryEntry[];
   critic_passes: number;
+  title_en?: string | null;
 }
 
 export interface TranslateBatchResult {
@@ -236,6 +241,7 @@ export interface TranslateStepResult {
   // and outage errors are thrown as ApiError). No progress; pause and retry.
   stalled: boolean;
   new_terms?: GlossaryEntry[];
+  title_en?: string | null;
 }
 
 export type Shelf = "reading" | "plan" | "completed";
@@ -282,11 +288,24 @@ export interface IngestResult {
 
 export interface NovelPatch {
   title?: string;
+  title_en?: string;
   author?: string;
   description?: string;
   tags?: string[];
   status?: string;
   source_lang?: string;
+}
+
+// Translated title when present, else the source title; the source title goes
+// in `hover` when both exist and differ.
+export function displayTitle(
+  src: string | null | undefined,
+  en: string | null | undefined,
+): { text: string; hover?: string } {
+  const e = (en ?? "").trim();
+  const t = (src ?? "").trim();
+  if (e) return t && t !== e ? { text: e, hover: t } : { text: e };
+  return { text: t };
 }
 
 export const api = {
@@ -400,6 +419,10 @@ export const api = {
     req<TranslateStepResult>("/translate/step", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  translateTitles: (novelId: number) =>
+    req<{ chapters: number; novel: boolean }>(`/novels/${novelId}/titles/translate`, {
+      method: "POST",
     }),
   ask: (body: {
     novel_id: number;

@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../components/BookCover";
 import { IconArrowUpDown, IconChevronDown, IconSearch, IconSlidersHorizontal, IconUpload, IconX } from "../components/icons";
-import { api, errorText, Novel, NovelQuery } from "../lib/api";
+import { api, displayTitle, errorText, Novel, NovelQuery } from "../lib/api";
 
 const PAGE_SIZE = 24;
 
@@ -239,9 +239,9 @@ function CatalogInner() {
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={n.title} id={n.id} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} />
                 <div className="body">
-                  <div className="title">{n.title}</div>
+                  <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
                   <div className="pill-row">
                     <span className={`pill status-${n.status}`}>{n.status}</span>
