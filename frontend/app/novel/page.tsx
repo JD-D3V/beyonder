@@ -23,6 +23,7 @@ import {
   displayTitle,
   errorText,
   GlossaryEntry,
+  KeyRequiredError,
   Novel,
   ReviewFlag,
   Shelf,
@@ -65,6 +66,7 @@ function BookInner() {
   const [editing, setEditing] = useState(false);
   const [running, setRunning] = useState(false);
   const [progressNote, setProgressNote] = useState<string | null>(null);
+  const [keyNeeded, setKeyNeeded] = useState(false);
   const [resumeAt, setResumeAt] = useState(0);
   // A ref, not state: the loop below reads it between awaits and would
   // otherwise close over the value from the render that started it.
@@ -256,6 +258,7 @@ function BookInner() {
   async function translateTitles() {
     setBusy(true);
     setErr(null);
+    setKeyNeeded(false);
     setNote(null);
     try {
       const r = await api.translateTitles(novelId);
@@ -265,7 +268,8 @@ function BookInner() {
       );
       await load();
     } catch (e) {
-      setErr(errorText(e));
+      if (e instanceof KeyRequiredError) setKeyNeeded(true);
+      else setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -329,6 +333,7 @@ function BookInner() {
     setRunning(true);
     stopped.current = false;
     setErr(null);
+    setKeyNeeded(false);
     let done = 0;
     try {
       for (const c of list) {
@@ -347,7 +352,8 @@ function BookInner() {
         );
       }
     } catch (e) {
-      setErr(errorText(e));
+      if (e instanceof KeyRequiredError) setKeyNeeded(true);
+      else setErr(errorText(e));
       setProgressNote(`Stopped after ${done}. Saved progress is kept.`);
     } finally {
       setRunning(false);
@@ -597,6 +603,11 @@ function BookInner() {
         </div>
       </div>
 
+      {keyNeeded && (
+        <div className="error">
+          This needs an AI key. <Link href="/settings">Add your API key</Link>
+        </div>
+      )}
       {err && <div className="error">{err}</div>}
       {note && <div className="notice">{note}</div>}
       {progressNote && <div className="notice">{progressNote}</div>}
