@@ -9,14 +9,22 @@ import {
   setLlmConfig,
   type Provider,
 } from "../../lib/llmKey";
+import {
+  applySiteTheme,
+  loadSiteTheme,
+  saveSiteTheme,
+  type SiteTheme,
+} from "../../lib/siteTheme";
 
 export default function SettingsPage() {
   const [provider, setProvider] = useState<Provider>("gemini");
   const [key, setKey] = useState("");
   const [model, setModel] = useState("");
   const [note, setNote] = useState<string | null>(null);
+  const [siteTheme, setSiteTheme] = useState<SiteTheme>("system");
 
   useEffect(() => {
+    setSiteTheme(loadSiteTheme());
     const c = getLlmConfig();
     if (c) {
       setProvider(c.provider);
@@ -45,9 +53,32 @@ export default function SettingsPage() {
     setNote("Key removed.");
   }
 
+  function chooseTheme(t: SiteTheme) {
+    setSiteTheme(t);
+    saveSiteTheme(t);
+    applySiteTheme(t);
+  }
+
   return (
     <div style={{ maxWidth: 520 }}>
       <h1>Settings</h1>
+      <h2>Website theme</h2>
+      <p className="small muted">
+        Applies to the whole site. The reader has its own theme in its display settings.
+      </p>
+      <div className="seg" style={{ width: "fit-content", marginBottom: 18 }}>
+        {(["light", "dark", "system"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={siteTheme === t ? "on" : ""}
+            aria-pressed={siteTheme === t}
+            onClick={() => chooseTheme(t)}
+          >
+            {t === "light" ? "Light" : t === "dark" ? "Dark" : "System"}
+          </button>
+        ))}
+      </div>
       <h2>AI key</h2>
       <p className="small muted">
         Translation and questions use your own AI key. The key stays in this

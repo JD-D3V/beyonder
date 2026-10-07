@@ -4,7 +4,15 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { IconLogIn, IconLogOut, IconSettings } from "./icons";
+import { IconLogIn, IconLogOut, IconMoon, IconSettings, IconSun } from "./icons";
+import {
+  applySiteTheme,
+  loadSiteTheme,
+  resolveSiteTheme,
+  saveSiteTheme,
+  SITE_THEME_EVENT,
+  type SiteTheme,
+} from "../lib/siteTheme";
 import {
   clearSession,
   getSession,
@@ -27,6 +35,33 @@ export default function Nav() {
   const pathname = usePathname();
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
+  const [theme, setTheme] = useState<SiteTheme>("system");
+  const [resolved, setResolved] = useState<"light" | "dark">("dark");
+
+  // Follow the stored choice (and the OS when set to System).
+  useEffect(() => {
+    const sync = () => {
+      const t = loadSiteTheme();
+      setTheme(t);
+      setResolved(resolveSiteTheme(t));
+      applySiteTheme(t);
+    };
+    sync();
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    window.addEventListener(SITE_THEME_EVENT, sync);
+    window.addEventListener("storage", sync);
+    mq.addEventListener("change", sync);
+    return () => {
+      window.removeEventListener(SITE_THEME_EVENT, sync);
+      window.removeEventListener("storage", sync);
+      mq.removeEventListener("change", sync);
+    };
+  }, []);
+
+  // Cycle System -> Light -> Dark.
+  function cycleTheme() {
+    saveSiteTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
+  }
 
   // Read storage after mount so the static HTML and first render match.
   useEffect(() => {
@@ -89,6 +124,20 @@ export default function Nav() {
             <IconLogIn size={16} /> Sign in
           </Link>
         )}
+      </div>
+      <div className="theme-toggle">
+        <button
+          type="button"
+          className="secondary"
+          onClick={cycleTheme}
+          title={`Website theme: ${theme}. Click to change.`}
+          aria-label={`Website theme: ${theme}. Click to change.`}
+        >
+          {resolved === "light" ? <IconSun size={16} /> : <IconMoon size={16} />}
+          <span className="small">
+            {theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}
+          </span>
+        </button>
       </div>
     </nav>
   );
