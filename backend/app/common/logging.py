@@ -8,14 +8,27 @@ from .config import settings
 
 _configured = False
 
-_SECRET_KEYS = {"x-llm-key", "api_key", "llm_key", "authorization", "x_llm_key"}
+_SECRET_KEYS = {
+    "x-llm-key", "api_key", "llm_key", "authorization", "x_llm_key",
+    "password", "token",
+}
+
+
+def _redact(value):
+    if isinstance(value, dict):
+        return {
+            k: "***" if str(k).lower() in _SECRET_KEYS else _redact(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(v) for v in value)
+    return value
 
 
 def redact_llm_keys(_logger, _method, event_dict):
-    for k in list(event_dict):
-        if str(k).lower() in _SECRET_KEYS:
-            event_dict[k] = "***"
-    return event_dict
+    return _redact(event_dict)
 
 
 def _configure() -> None:

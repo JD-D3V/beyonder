@@ -21,6 +21,7 @@ from ..agents.translator import translate_chapter
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
 from ..llm.client import LLMClient, LLMError
+from ..review.checks import deterministic_flags
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
@@ -164,13 +165,30 @@ async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[
 async def node_critic(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.translation:
         return _skip(state)
-    res = await critique_translation(
-        client=_llm(config),
-        source=state.chapter_text,
-        candidate=state.translation,
-        glossary=list(state.glossary),
-        variants=state.variants,
-    )
+    try:
+        res = await critique_translation(
+            client=_llm(config),
+            source=state.chapter_text,
+            candidate=state.translation,
+            glossary=list(state.glossary),
+            variants=state.variants,
+        )
+    except LLMError as e:
+        if e.code not in ("llm_rate_limited", "llm_upstream"):
+            raise  # a bad key is bad for everything
+        # QA is non-blocking: never throw away a paid translation because the
+        # critic's call failed. Keep deterministic checks, skip the LLM flags.
+        log.warning("graph.critic_unavailable", code=e.code)
+        fixed, flags = deterministic_flags(
+            state.chapter_text, state.translation,
+            list(state.glossary), state.variants or {},
+        )
+        return {
+            "critic_passes": state.critic_passes + 1,
+            "translation": fixed or state.translation,
+            "flags": flags,
+            "done": True,
+        }
     return {
         "critic_passes": state.critic_passes + 1,
         "translation": res.fixed_text or state.translation,

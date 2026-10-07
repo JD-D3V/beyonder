@@ -138,6 +138,7 @@ async def translate_batch(
 
     batch = pending[: body.limit]
     translated: list[int] = []
+    lost: list[int] = []
     error: str | None = None
 
     for idx in batch:
@@ -152,7 +153,7 @@ async def translate_batch(
                 translated_by=user.id,
             )
         except LLMError:
-            if not translated:
+            if not translated and not lost:
                 raise  # nothing done yet: surface key/rate/upstream as HTTP
             error = f"chapter {idx + 1}: model unavailable"
             break
@@ -162,9 +163,12 @@ async def translate_batch(
         if state.error:
             error = f"chapter {idx + 1}: {state.error}"
             break
-        translated.append(idx)
+        if state.lost_race:
+            lost.append(idx)
+        else:
+            translated.append(idx)
 
-    remaining = len(pending) - len(translated)
+    remaining = len(pending) - len(translated) - len(lost)
     log.info(
         "translate.batch",
         novel_id=body.novel_id,
@@ -174,6 +178,7 @@ async def translate_batch(
     )
     return TranslateBatchResult(
         translated=translated,
+        lost_race=lost,
         remaining=remaining,
         done=remaining == 0,
         error=error,

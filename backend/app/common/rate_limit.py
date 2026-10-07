@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from .config import settings
@@ -64,7 +65,8 @@ gemini_limiter = AsyncRateLimiter(
 )
 
 
-_keyed: dict[str, AsyncRateLimiter] = {}
+_KEYED_MAX = 1000
+_keyed: "OrderedDict[str, AsyncRateLimiter]" = OrderedDict()
 
 
 def limiter_for(key_id: str) -> AsyncRateLimiter:
@@ -74,4 +76,8 @@ def limiter_for(key_id: str) -> AsyncRateLimiter:
         lim = _keyed[key_id] = AsyncRateLimiter(
             rpm=settings.gemini_rpm_limit, concurrency=settings.gemini_concurrency
         )
+        while len(_keyed) > _KEYED_MAX:
+            _keyed.popitem(last=False)
+    else:
+        _keyed.move_to_end(key_id)
     return lim

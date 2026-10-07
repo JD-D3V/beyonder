@@ -15,7 +15,7 @@ from ..embed.pipeline import embed_chapters
 from ..ingest.epub_loader import load_epub
 from ..ingest.lang import detect_lang
 from ..ingest.pdf_loader import load_pdf
-from ..ingest.scraper import scrape_many
+from ..ingest.scraper import UnsafeURL, scrape_many
 from ..ingest.splitter import split_chapters
 from ..ingest.txt_loader import load_txt
 from ..storage.db import get_session
@@ -364,7 +364,12 @@ async def upload_novel(
 async def ingest_url(
     body: IngestUrlIn, _user: User = Depends(current_user)
 ) -> IngestResult:
-    pages = await scrape_many(body.urls, concurrency=2)
+    try:
+        pages = await scrape_many(body.urls, concurrency=2)
+    except UnsafeURL as e:
+        raise HTTPException(
+            400, detail={"code": "unsafe_url", "detail": f"URL not allowed: {e}"}
+        )
     combined = "\n\n".join(p.text for p in pages if p.text)
     if not combined.strip():
         raise HTTPException(400, "scrape returned empty text")
