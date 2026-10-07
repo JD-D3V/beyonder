@@ -1,0 +1,63 @@
+/* placeholder: replaced on merge */
+/* Reader theming is scoped to .reader-root; the rest of the site keeps its
+   own palette. Light / sepia / dark tokens: */
+.reader-root {
+  --r-bg: #0d1117;
+  --r-page: #161b22;
+  --r-fg: #e6edf3;
+  --r-muted: #8b949e;
+  --r-border: #30363d;
+  --r-accent: #58a6ff;
+  --r-hl: rgba(88, 166, 255, 0.5);
+  --r-font: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --r-size: 18px;
+  --r-lh: 1.8;
+  --r-width: 720px;
+  color: var(--r-fg);
+  background: var(--r-bg);
+  border-radius: 14px;
+  padding: 14px 16px 24px;
+  /* Pull the themed area to the full content width. */
+  margin: 0 auto;
+}
+.reader-root[data-theme="light"] {
+  --r-bg: #f6f7f9;
+  --r-page: #ffffff;
+  --r-fg: #1f2328;
+  --r-muted: #59636e;
+  --r-border: #d0d7de;
+  --r-accent: #0969da;
+  --r-hl: rgba(9, 105, 218, 0.45);
+}
+.reader-root[data-theme="sepia"] {
+  --r-bg: #eadfc8;
+  --r-page: #f4ecd8;
+  --r-fg: #433422;
+  --r-muted: #7a6a53;
+  --r-border: #d3c4a3;
+  --r-accent: #8a5a1f;
+  --r-hl: rgba(138, 90, 31, 0.5);
+}
+.reader-root a { color: var(--r-accent); }
+.reader-root .muted { color: var(--r-muted); }
+.reader-root .panel,
+.reader-root .reader-settings {
+  background: var(--r-page);
+  border-color: var(--r-border);
+  color: var(--r-fg);
+}
+.reader-root button.secondary,
+.reader-root .seg button {
+  background: var(--r-page);
+  color: var(--r-fg);
+  border: 1px solid var(--r-border);
+}
+.reader-root .seg { border-color: var(--r-border); }
+.reader-root .seg button { border: 0; color: var(--r-muted); }
+.reader-root .seg button.on { background: var(--r-bg); color: var(--r-fg); }
+.reader-root textarea {
+  background: var(--r-bg);
+  color: var(--r-fg);
+  border-color: var(--r-border);
+}
+
