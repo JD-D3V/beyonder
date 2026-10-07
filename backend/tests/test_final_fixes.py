@@ -268,17 +268,25 @@ def test_sliding_window_expires_and_is_bounded():
     assert len(w) <= 3
 
 
-def test_client_ip_ignores_forwarded_unless_trusted(monkeypatch):
+@pytest.mark.parametrize(
+    "hops,xff,expected",
+    [
+        (0, "6.6.6.6, 1.2.3.4", "10.0.0.1"),
+        (1, "6.6.6.6, 1.2.3.4", "1.2.3.4"),
+        (2, "6.6.6.6, 1.2.3.4", "6.6.6.6"),
+        (2, "1.2.3.4", "10.0.0.1"),
+        (3, "6.6.6.6, 1.2.3.4", "10.0.0.1"),
+        (1, "", "10.0.0.1"),
+        (1, " , ", "10.0.0.1"),
+    ],
+)
+def test_client_ip_trust_proxy_hops(monkeypatch, hops, xff, expected):
     import app.api.auth_routes as ar
 
-    req = SimpleNamespace(
-        client=SimpleNamespace(host="10.0.0.1"),
-        headers={"x-forwarded-for": "6.6.6.6, 1.2.3.4"},
-    )
-    monkeypatch.setattr(ar.settings, "trust_proxy", False)
-    assert ar.client_ip(req) == "10.0.0.1"
-    monkeypatch.setattr(ar.settings, "trust_proxy", True)
-    assert ar.client_ip(req) == "1.2.3.4"
+    headers = {"x-forwarded-for": xff} if xff else {}
+    req = SimpleNamespace(client=SimpleNamespace(host="10.0.0.1"), headers=headers)
+    monkeypatch.setattr(ar.settings, "trust_proxy_hops", hops)
+    assert ar.client_ip(req) == expected
 
 
 # --- minors ---------------------------------------------------------------

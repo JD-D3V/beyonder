@@ -213,6 +213,11 @@ class Invite(Base):
     used_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # used_by is SET NULL when the invitee is deleted; used_at is not, so a
+    # claimed invite stays spent.
+    used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

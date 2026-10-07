@@ -51,9 +51,12 @@ services:
         value: beyonder_chunks
       - key: SCRAPER_BACKEND
         value: http
-      # Render's proxy sets X-Forwarded-For; the login throttle keys on it.
-      - key: TRUST_PROXY
-        value: "true"
+      # Trusted proxy hops in front of the app; the login throttle keys on the
+      # Nth-from-right X-Forwarded-For entry. 1 is an assumption: verify
+      # Render's hop count (log X-Forwarded-For once from a real request) and
+      # adjust, or the throttle keys on the wrong address.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
       - key: LOG_LEVEL
         value: INFO
       - key: PYTHONUNBUFFERED
