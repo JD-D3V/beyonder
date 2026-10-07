@@ -49,6 +49,8 @@ class Novel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(512))
+    # Translated (English) book title; NULL until translated or edited.
+    title_en: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     author: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Comma-separated and lowercased. See the 0002 migration for why not a join.
@@ -106,6 +108,8 @@ class Translation(Base):
     )
     target_lang: Mapped[str] = mapped_column(String(8))
     text: Mapped[str] = mapped_column(Text)
+    # Translated chapter title for this language; NULL until translated.
+    title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     model: Mapped[str] = mapped_column(String(64))
     critic_passes: Mapped[int] = mapped_column(Integer, default=0)
     # Resumable translation progress. NULL means complete: both legacy rows and

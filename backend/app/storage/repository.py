@@ -88,6 +88,7 @@ def upsert_translation(
     translated_by: int | None = None,
     overwrite: bool = False,
     allow_empty: bool = False,
+    title: str | None = None,
 ) -> bool:
     """Insert or replace the translation for (chapter, lang). True if it wrote.
 
@@ -127,6 +128,8 @@ def upsert_translation(
         existing.model = model
         existing.critic_passes = critic_passes
         existing.pieces_done = pieces_done
+        if title is not None:
+            existing.title = title
         if translated_by is not None:
             existing.translated_by = translated_by
         session.flush()
@@ -142,6 +145,7 @@ def upsert_translation(
                     critic_passes=critic_passes,
                     pieces_done=pieces_done,
                     translated_by=translated_by,
+                    title=title,
                 )
             )
     except IntegrityError:
@@ -151,7 +155,7 @@ def upsert_translation(
             session, chapter_id=chapter_id, target_lang=target_lang, text=text,
             model=model, critic_passes=critic_passes, pieces_done=pieces_done,
             translated_by=translated_by, overwrite=overwrite,
-            allow_empty=allow_empty,
+            allow_empty=allow_empty, title=title,
         )
     return True
 
@@ -603,6 +607,7 @@ class ChapterRow:
     # Set when a resumable translation is mid-flight (pieces done so far); None
     # when the chapter is untranslated or fully complete.
     pieces_done: int | None = None
+    title_en: str | None = None
 
 
 def chapter_rows(
@@ -616,6 +621,7 @@ def chapter_rows(
             Chapter.char_count,
             Translation.id,
             Translation.pieces_done,
+            Translation.title,
         )
         .outerjoin(
             Translation,
@@ -626,7 +632,7 @@ def chapter_rows(
         .order_by(Chapter.idx)
     )
     rows: list[ChapterRow] = []
-    for i, t, c, tr_id, pieces in session.execute(stmt).all():
+    for i, t, c, tr_id, pieces, tr_title in session.execute(stmt).all():
         has_row = tr_id is not None
         rows.append(
             ChapterRow(
@@ -635,6 +641,7 @@ def chapter_rows(
                 char_count=c,
                 translated=has_row and pieces is None,
                 pieces_done=pieces if has_row else None,
+                title_en=tr_title if has_row else None,
             )
         )
     return rows
@@ -651,12 +658,34 @@ def get_translation(
     ).scalar_one_or_none()
 
 
+def untitled_translations(
+    session: Session, novel_id: int, *, target_lang: str = "en"
+) -> list[tuple[Translation, str]]:
+    """(translation, source chapter title) for complete translations that have
+    a source title but no translated title yet, in chapter order."""
+    rows = session.execute(
+        select(Translation, Chapter.title)
+        .join(Chapter, Chapter.id == Translation.chapter_id)
+        .where(
+            Chapter.novel_id == novel_id,
+            Translation.target_lang == target_lang,
+            Translation.pieces_done.is_(None),
+            Translation.text != "",
+            Translation.title.is_(None),
+            Chapter.title.is_not(None),
+            Chapter.title != "",
+        )
+        .order_by(Chapter.idx)
+    ).all()
+    return [(tr, t) for tr, t in rows]
+
+
 def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
     """Set only the fields given. Unknown keys are ignored, not an error."""
     novel = session.get(Novel, novel_id)
     if novel is None:
         return None
-    allowed = {"title", "author", "description", "tags", "status", "source_lang"}
+    allowed = {"title", "title_en", "author", "description", "tags", "status", "source_lang"}
     for key, value in fields.items():
         if key in allowed and value is not None:
             setattr(novel, key, value)

@@ -131,8 +131,9 @@ def _fake_session():
 def _stub_graph_db(monkeypatch, writes):
     from app.graph import orchestrator as o
 
-    chap = SimpleNamespace(id=5, source_text="王林来了。他很高兴。")
+    chap = SimpleNamespace(id=5, source_text="王林来了。他很高兴。", title=None)
     monkeypatch.setattr(o, "get_session", _fake_session)
+    monkeypatch.setattr(o, "get_novel", lambda s, n: SimpleNamespace(title_en="x"))
     monkeypatch.setattr(o, "get_chapter_by_idx", lambda s, n, i: chap)
     monkeypatch.setattr(o, "get_terms_for_chapters", lambda *a, **k: [])
     monkeypatch.setattr(o, "load_variants", lambda *a, **k: {})
@@ -247,7 +248,7 @@ def _stub_step_db(monkeypatch, saved):
     chap = SimpleNamespace(source_text="你好", id=1)
     monkeypatch.setattr(resumable, "get_session", lambda: _S())
     monkeypatch.setattr(resumable, "get_chapter_by_idx", lambda s, n, i: chap)
-    monkeypatch.setattr(resumable, "get_novel", lambda s, n: SimpleNamespace(title="T"))
+    monkeypatch.setattr(resumable, "get_novel", lambda s, n: SimpleNamespace(title="T", title_en="x"))
     monkeypatch.setattr(resumable, "get_translation", lambda s, **k: None)
     monkeypatch.setattr(resumable, "get_terms_for_chapters", lambda *a, **k: [])
     monkeypatch.setattr(resumable, "upsert_terms", lambda *a, **k: None)

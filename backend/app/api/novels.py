@@ -7,8 +7,11 @@ from pathlib import Path
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile,
+)
 
+from ..agents.translator import translate_title, translate_titles_batch
 from ..auth.deps import current_user, current_user_optional, require_admin
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
@@ -18,8 +21,9 @@ from ..ingest.pdf_loader import load_pdf
 from ..ingest.scraper import UnsafeURL, scrape_many
 from ..ingest.splitter import split_chapters
 from ..ingest.txt_loader import load_txt
+from ..llm.resolve import resolve_llm
 from ..storage.db import get_session
-from ..storage.models import Novel, User
+from ..storage.models import Novel, Translation, User
 from ..storage.repository import (
     CatalogParams,
     advance_progress,
@@ -29,10 +33,12 @@ from ..storage.repository import (
     get_chapter_by_idx,
     get_chapters,
     get_novel,
+    get_terms_for_chapters,
     get_translation,
     insert_chapter,
     library_rows,
     term_dicts,
+    untitled_translations,
     update_novel,
     update_term,
 )
@@ -48,6 +54,7 @@ from .schemas import (
     GlossaryPatch,
     NovelOut,
     NovelPatch,
+    TitlesTranslateResult,
 )
 
 log = get_logger(__name__)
@@ -75,6 +82,7 @@ def _novel_out(
     return NovelOut(
         id=novel.id,
         title=novel.title,
+        title_en=novel.title_en,
         author=novel.author,
         description=novel.description,
         tags=_split_tags(novel.tags),
@@ -131,6 +139,7 @@ async def patch_novel_route(
             s,
             novel_id,
             title=body.title,
+            title_en=body.title_en,
             author=body.author,
             description=body.description,
             tags=_join_tags(body.tags),
@@ -185,6 +194,7 @@ async def list_chapters_route(
             ChapterOut(
                 idx=r.idx,
                 title=r.title,
+                title_en=r.title_en,
                 char_count=r.char_count,
                 translated=r.translated,
                 pieces_done=r.pieces_done,
@@ -214,6 +224,7 @@ async def get_chapter_route(
         return ChapterDetail(
             idx=chap.idx,
             title=chap.title,
+            title_en=tr.title if tr else None,
             char_count=chap.char_count,
             source_text=chap.source_text,
             translation=tr.text if tr else None,
@@ -222,6 +233,56 @@ async def get_chapter_route(
             complete=tr is not None and tr.pieces_done is None,
             pieces_done=tr.pieces_done if tr else None,
         )
+
+
+_TITLE_BATCH = 40
+
+
+@router.post(
+    "/novels/{novel_id}/titles/translate", response_model=TitlesTranslateResult
+)
+async def translate_titles_route(
+    novel_id: int, request: Request, admin: User = Depends(require_admin)
+) -> TitlesTranslateResult:
+    """Backfill translated titles for chapters that already have a complete
+    English translation, plus the book title. Batched to save LLM quota."""
+    llm = resolve_llm(request.headers, admin)
+    with get_session() as s:
+        novel = get_novel(s, novel_id)
+        if novel is None:
+            raise HTTPException(404, "novel not found")
+        novel_title = novel.title
+        need_novel = not novel.title_en
+        glossary = [
+            (t.source_term, t.target_term)
+            for t in get_terms_for_chapters(
+                s, novel_id, up_to_chapter=10**6, target_lang="en"
+            )
+        ]
+        pending = [(tr.id, title) for tr, title in untitled_translations(s, novel_id)]
+
+    done = 0
+    for i in range(0, len(pending), _TITLE_BATCH):
+        batch = pending[i : i + _TITLE_BATCH]
+        out = await translate_titles_batch(llm, [t for _, t in batch], glossary)
+        with get_session() as s:
+            for (tr_id, _), en in zip(batch, out):
+                row = s.get(Translation, tr_id)
+                if en and row is not None and row.title is None:
+                    row.title = en
+                    done += 1
+
+    novel_done = False
+    if need_novel and novel_title.strip():
+        en = await translate_title(llm, novel_title, glossary)
+        if en:
+            with get_session() as s:
+                nv = get_novel(s, novel_id)
+                if nv is not None and not nv.title_en:
+                    update_novel(s, novel_id, title_en=en)
+                    novel_done = True
+    log.info("titles.translated", novel_id=novel_id, chapters=done, novel=novel_done)
+    return TitlesTranslateResult(chapters=done, novel=novel_done)
 
 
 # Uploads are held in memory before parsing, so cap them. A 20 MB text file is

@@ -38,7 +38,7 @@ def _stub_sessions(monkeypatch):
         monkeypatch.setattr(f"app.api.{m}.get_session", _fake_session)
 
 
-NOVEL = SimpleNamespace(id=1, title="T", source_lang="zh")
+NOVEL = SimpleNamespace(id=1, title="T", title_en="x", source_lang="zh")
 KEY = {"X-LLM-Provider": "gemini", "X-LLM-Key": "k"}
 
 
@@ -109,7 +109,7 @@ def test_non_admin_cannot_overwrite_complete_translation(client, monkeypatch):
     monkeypatch.setattr(
         "app.api.translate.get_translation",
         lambda s, chapter_id, target_lang="en": SimpleNamespace(
-            text="done", critic_passes=1, pieces_done=None
+            text="done", critic_passes=1, pieces_done=None, title=None
         ),
     )
 
@@ -142,7 +142,7 @@ def test_admin_force_resets_and_records_translator(client, monkeypatch):
     monkeypatch.setattr(
         "app.api.translate.get_translation",
         lambda s, chapter_id, target_lang="en": SimpleNamespace(
-            text="done", critic_passes=1, pieces_done=None
+            text="done", critic_passes=1, pieces_done=None, title=None
         ),
     )
     reset = []
@@ -156,7 +156,7 @@ def test_admin_force_resets_and_records_translator(client, monkeypatch):
         seen.update(kw)
         return SimpleNamespace(
             chapter_idx=0, pieces_done=1, pieces_total=2, complete=False,
-            stalled=False, error=None, new_terms=[],
+            stalled=False, error=None, new_terms=[], title_en=None,
         )
 
     monkeypatch.setattr("app.api.translate.translate_step", fake_step)
@@ -227,7 +227,7 @@ def test_translate_returns_stored_text_when_race_lost(client, monkeypatch):
         calls.append(1)
         if len(calls) == 1:  # complete check before the run: nothing yet
             return None
-        return SimpleNamespace(text="theirs", critic_passes=2, pieces_done=None)
+        return SimpleNamespace(text="theirs", critic_passes=2, pieces_done=None, title=None)
 
     monkeypatch.setattr("app.api.translate.get_translation", tr)
     seen = {}

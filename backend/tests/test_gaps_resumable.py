@@ -32,7 +32,7 @@ def _setup(monkeypatch, *, stored_override=None, fixed="FIXED"):
     chap = SimpleNamespace(id=5, source_text="one piece only")
     monkeypatch.setattr(r, "get_session", sess)
     monkeypatch.setattr(r, "get_chapter_by_idx", lambda s, n, i: chap)
-    monkeypatch.setattr(r, "get_novel", lambda s, n: SimpleNamespace(title="T"))
+    monkeypatch.setattr(r, "get_novel", lambda s, n: SimpleNamespace(title="T", title_en="T-en"))
     monkeypatch.setattr(r, "get_translation", lambda s, **k: None)
     monkeypatch.setattr(r, "get_terms_for_chapters", lambda *a, **k: [])
     monkeypatch.setattr(r, "match_seed", lambda *a, **k: [])

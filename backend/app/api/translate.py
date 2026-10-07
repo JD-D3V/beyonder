@@ -70,6 +70,7 @@ async def translate(
                     translation=done.text,
                     new_terms=[],
                     critic_passes=done.critic_passes,
+                    title_en=done.title,
                 )
     # Forced admin runs overwrite in place: the graph's upsert replaces the row.
     state = await run_translation_graph(
@@ -96,12 +97,14 @@ async def translate(
                 translation=stored.text,
                 new_terms=[],
                 critic_passes=stored.critic_passes,
+                title_en=stored.title,
             )
     return TranslateResult(
         chapter_idx=body.chapter_idx,
         translation=state.translation,
         new_terms=_terms_out(state.new_terms),
         critic_passes=state.critic_passes,
+        title_en=state.title_en,
     )
 
 
@@ -236,4 +239,5 @@ async def translate_step_route(
         complete=res.complete,
         stalled=res.stalled,
         new_terms=_terms_out(res.new_terms),
+        title_en=res.title_en,
     )

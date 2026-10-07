@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 
 from ..agents.relation import extract_relations_from_chapter
-from ..agents.translator import split_paragraphs, translate_paragraph
+from ..agents.translator import split_paragraphs, translate_paragraph, translate_title
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
 from ..review.checks import deterministic_flags
@@ -44,6 +44,7 @@ from ..storage.repository import (
     load_variants,
     replace_open_flags,
     term_dicts,
+    update_novel,
     upsert_terms,
     upsert_translation,
 )
@@ -68,6 +69,8 @@ class StepResult:
     stalled: bool = False
     # Terms persisted this call (seed hits, plus any the model found per piece).
     new_terms: list[dict] = field(default_factory=list)
+    # Translated chapter title, set on the call that translated it.
+    title_en: str | None = None
 
 
 def _dedup_by_id(rows: list[dict]) -> list[dict]:
@@ -122,6 +125,10 @@ async def translate_step(
         chap_id = chap.id
         novel = get_novel(s, novel_id)
         novel_title = novel.title if novel else ""
+        need_novel_title = (
+            chapter_idx == 0 and novel is not None and not novel.title_en
+        )
+        chapter_title = getattr(chap, "title", None)
         tr = get_translation(s, chapter_id=chap_id, target_lang=target_lang)
         existing_text = tr.text if tr else ""
         existing_done = tr.pieces_done if tr else None
@@ -177,6 +184,17 @@ async def translate_step(
                 )
             glossary.extend((h["source_term"], h["target_term"]) for h in hits)
 
+    # Titles once per chapter, on the first call, with the glossary as it
+    # stands (seed hits included). LLMError propagates; other failures leave
+    # the title unset.
+    title_en: str | None = None
+    novel_title_en: str | None = None
+    if start == 0:
+        if chapter_title and chapter_title.strip():
+            title_en = await translate_title(llm, chapter_title, glossary) or None
+        if need_novel_title and novel_title.strip():
+            novel_title_en = await translate_title(llm, novel_title, glossary) or None
+
     done = start
     t0 = time.monotonic()
     for i in range(start, total):
@@ -225,7 +243,13 @@ async def translate_step(
                 model=llm.model_name, critic_passes=0,
                 pieces_done=(None if done == total else done),
                 translated_by=translated_by,
+                title=title_en,
             )
+            if wrote and novel_title_en:
+                nv = get_novel(s, novel_id)
+                if nv is not None and not nv.title_en:
+                    update_novel(s, novel_id, title_en=novel_title_en)
+                novel_title_en = None
         if wrote is False:
             # A complete translation landed meanwhile (another request); our
             # write was refused so it is not clobbered. Nothing more to do.
@@ -287,5 +311,6 @@ async def translate_step(
         complete=complete,
     )
     return StepResult(
-        chapter_idx, done, total, complete, new_terms=_dedup_by_id(new_terms)
+        chapter_idx, done, total, complete, new_terms=_dedup_by_id(new_terms),
+        title_en=title_en,
     )
