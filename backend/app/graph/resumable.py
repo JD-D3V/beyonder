@@ -31,7 +31,7 @@ from ..agents.translator import split_paragraphs, translate_paragraph, translate
 from ..common.logging import get_logger
 from ..glossary.seed import match_seed
 from ..review.checks import deterministic_flags
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMError
 from ..storage.db import get_session
 from ..storage.models import Translation
 from ..storage.repository import (
@@ -184,16 +184,12 @@ async def translate_step(
                 )
             glossary.extend((h["source_term"], h["target_term"]) for h in hits)
 
-    # Titles once per chapter, on the first call, with the glossary as it
-    # stands (seed hits included). LLMError propagates; other failures leave
-    # the title unset.
+    # Titles once per chapter, on the first call -- but only after the first
+    # piece has translated (below), so a call that stalls before anything
+    # persists does not spend title calls that the retry would repeat.
     title_en: str | None = None
     novel_title_en: str | None = None
-    if start == 0:
-        if chapter_title and chapter_title.strip():
-            title_en = await translate_title(llm, chapter_title, glossary) or None
-        if need_novel_title and novel_title.strip():
-            novel_title_en = await translate_title(llm, novel_title, glossary) or None
+    titles_pending = start == 0
 
     done = start
     t0 = time.monotonic()
@@ -227,6 +223,22 @@ async def translate_step(
             pair = (t["source_term"], t["target_term"])
             if pair not in glossary:
                 glossary.append(pair)
+        if titles_pending:
+            titles_pending = False
+            # A title failure must not discard the piece we just translated;
+            # the admin backfill route fills a missing title later.
+            try:
+                if chapter_title and chapter_title.strip():
+                    title_en = await translate_title(llm, chapter_title, glossary) or None
+                if need_novel_title and novel_title.strip():
+                    novel_title_en = (
+                        await translate_title(llm, novel_title, glossary) or None
+                    )
+            except LLMError as e:
+                log.warning(
+                    "translate_step.title_failed",
+                    chapter_idx=chapter_idx, err=str(e),
+                )
         done = i + 1
         with get_session() as s:
             if r.new_terms:

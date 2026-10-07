@@ -108,3 +108,79 @@ def test_multiple_runs_stay_contiguous(db_session):
     rows = s.query(Chapter).filter_by(novel_id=n.id).order_by(Chapter.idx).all()
     assert [(c.idx, c.title) for c in rows] == [(0, "A"), (1, "M"), (2, "B"), (3, "N")]
     assert plan.mapping == {0: 0, 1: 0, 2: 1, 3: 2, 4: 2, 5: 2, 6: 3}
+
+
+@pytest.mark.db
+def test_dropped_translation_counted_and_flags_deleted(db_session):
+    s = db_session
+    n, ch = _book(s, ["A", "A (2)", "B", "C", "C (2)"])
+    _tr(s, ch[0], "en0")
+    _tr(s, ch[1], "partial", pieces_done=1)  # A: en dropped
+    _tr(s, ch[3], "enC")
+    _tr(s, ch[4], "enC2")  # C: complete, kept
+    s.add_all([
+        ReviewFlag(novel_id=n.id, chapter_idx=0, kind="idiom"),
+        ReviewFlag(novel_id=n.id, chapter_idx=1, kind="idiom"),
+        ReviewFlag(novel_id=n.id, chapter_idx=3, kind="idiom"),
+    ])
+    s.flush()
+    assert merge_novel(s, n.id, dry_run=True).dropped_translations == 1
+    plan = merge_novel(s, n.id)
+    s.flush()
+    assert plan.dropped_translations == 1
+    # Only the kept run's flag survives, remapped (old 3 -> new 2).
+    assert [f.chapter_idx for f in s.query(ReviewFlag)] == [2]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_failure_is_reported_and_others_continue(monkeypatch, capsys):
+    from app.scripts import merge_parts as mp
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    @contextmanager
+    def sess():
+        yield SimpleNamespace(scalars=lambda q: [1, 2])
+
+    calls = []
+
+    async def rebuild(nid):
+        calls.append(nid)
+        if nid == 1:
+            raise RuntimeError("qdrant down")
+        return 5
+
+    monkeypatch.setattr(mp, "get_session", sess)
+    monkeypatch.setattr(mp, "_rebuild_vectors", rebuild)
+    failed = await mp._run(None, False, reembed_only=True)
+    out = capsys.readouterr().out
+    assert failed == 1 and calls == [1, 2]
+    assert 'Vectors for novel 1 could not be rebuilt: qdrant down. Run `make reembed ARGS="--novel 1"`' in out
+    assert "re-embedded 5 chunks" in out
+
+
+@pytest.mark.asyncio
+async def test_merge_then_rebuild_failure_exits_nonzero(monkeypatch, capsys):
+    from app.scripts import merge_parts as mp
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    @contextmanager
+    def sess():
+        yield SimpleNamespace(scalars=lambda q: [7])
+
+    async def rebuild(nid):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mp, "get_session", sess)
+    monkeypatch.setattr(
+        mp, "merge_novel",
+        lambda s, nid, dry_run=False: mp.MergePlan(
+            nid, [[0, 1]], {0: 0, 1: 0}, 2, 1, dropped_translations=3
+        ),
+    )
+    monkeypatch.setattr(mp, "_rebuild_vectors", rebuild)
+    assert await mp._run(None, False) == 1
+    out = capsys.readouterr().out
+    assert "3 existing translation(s) were dropped" in out
+    assert "could not be rebuilt" in out

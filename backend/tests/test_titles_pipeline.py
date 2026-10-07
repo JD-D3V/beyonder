@@ -279,3 +279,92 @@ def test_titles_translate_route_requires_admin(client):
         id=2, email="u@x", is_admin=False
     )
     assert client.post("/novels/1/titles/translate").status_code in (401, 403)
+
+
+# --- title failures never discard the chapter / first-call stalls ------------
+
+
+@pytest.mark.asyncio
+async def test_node_translate_survives_title_llm_error(monkeypatch):
+    from app.llm.client import LLMError
+
+    async def tc(text, **k):
+        return SimpleNamespace(translation="Body", new_terms=[])
+
+    async def tt(client, title, glossary, *a, **k):
+        raise LLMError("llm_upstream", "boom")
+
+    monkeypatch.setattr(orch, "translate_chapter", tc)
+    monkeypatch.setattr(orch, "translate_title", tt)
+    out = await orch.node_translate(_state(), {"configurable": {"llm": _Llm()}})
+    assert out["translation"] == "Body"
+    assert out["title_en"] is None and out["novel_title_en"] is None
+
+
+@pytest.mark.asyncio
+async def test_node_translate_novel_title_error_keeps_chapter_title(monkeypatch):
+    from app.llm.client import LLMError
+
+    async def tc(text, **k):
+        return SimpleNamespace(translation="Body", new_terms=[])
+
+    async def tt(client, title, glossary, *a, **k):
+        if title == "修仙传":
+            raise LLMError("llm_upstream", "boom")
+        return "EN"
+
+    monkeypatch.setattr(orch, "translate_chapter", tc)
+    monkeypatch.setattr(orch, "translate_title", tt)
+    out = await orch.node_translate(_state(), {"configurable": {"llm": _Llm()}})
+    assert out["title_en"] == "EN" and out["novel_title_en"] is None
+
+
+def test_clean_title_truncates_to_512():
+    from app.agents.translator import _clean_title
+
+    assert len(_clean_title("x" * 2000)) == 512
+
+
+@pytest.mark.asyncio
+async def test_translate_step_stall_before_first_piece_spends_no_title_call(monkeypatch):
+    _setup(monkeypatch)
+    chap = SimpleNamespace(id=5, source_text="one piece only", title="第一章")
+    monkeypatch.setattr(r, "get_chapter_by_idx", lambda s, n, i: chap)
+    monkeypatch.setattr(
+        r, "get_novel", lambda s, n: SimpleNamespace(title="修仙传", title_en=None)
+    )
+    calls = []
+
+    async def tt(*a, **k):
+        calls.append(1)
+        return "x"
+
+    async def blank(piece, **k):
+        return SimpleNamespace(translation="", new_terms=[])
+
+    monkeypatch.setattr(r, "translate_title", tt)
+    monkeypatch.setattr(r, "translate_paragraph", blank)
+    res = await r.translate_step(llm=_Llm(), novel_id=1, chapter_idx=0)
+    assert res.stalled and calls == []
+
+
+@pytest.mark.asyncio
+async def test_translate_step_title_llm_error_keeps_the_piece(monkeypatch):
+    from app.llm.client import LLMError
+
+    _setup(monkeypatch)
+    chap = SimpleNamespace(id=5, source_text="one piece only", title="第一章")
+    monkeypatch.setattr(r, "get_chapter_by_idx", lambda s, n, i: chap)
+    saved = []
+
+    async def tt(*a, **k):
+        raise LLMError("llm_upstream", "boom")
+
+    def upsert(s, *, text, **k):
+        saved.append((text, k.get("title")))
+        return True
+
+    monkeypatch.setattr(r, "translate_title", tt)
+    monkeypatch.setattr(r, "upsert_translation", upsert)
+    res = await r.translate_step(llm=_Llm(), novel_id=1, chapter_idx=0)
+    assert saved == [("draft", None)] and res.title_en is None

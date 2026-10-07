@@ -168,20 +168,27 @@ async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[
         pair = (t["source_term"], t["target_term"])
         if pair not in merged_gloss:
             merged_gloss.append(pair)
-    # Titles use the finished glossary. LLMError propagates; other failures
-    # leave the title unset (translate_title logs them).
+    # Titles use the finished glossary. A title failure (LLMError) must not
+    # discard the finished chapter: leave it null, the admin backfill route
+    # fills it later. Other failures are logged by translate_title.
     title_en = None
     if state.chapter_title and state.chapter_title.strip():
-        title_en = (
-            await translate_title(_llm(config), state.chapter_title, merged_gloss)
-            or None
-        )
+        try:
+            title_en = (
+                await translate_title(_llm(config), state.chapter_title, merged_gloss)
+                or None
+            )
+        except LLMError as e:
+            log.warning("translate.chapter_title_failed", err=str(e))
     novel_title_en = None
     if state.need_novel_title and state.novel_title.strip():
-        novel_title_en = (
-            await translate_title(_llm(config), state.novel_title, merged_gloss)
-            or None
-        )
+        try:
+            novel_title_en = (
+                await translate_title(_llm(config), state.novel_title, merged_gloss)
+                or None
+            )
+        except LLMError as e:
+            log.warning("translate.novel_title_failed", err=str(e))
     return {
         "title_en": title_en,
         "novel_title_en": novel_title_en,

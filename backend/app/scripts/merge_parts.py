@@ -1,6 +1,6 @@
 """Merge "T", "T (2)", "T (3)" ... chapter runs back into one chapter.
 
-    python -m app.scripts.merge_parts [--novel ID] [--dry-run]
+    python -m app.scripts.merge_parts [--novel ID] [--dry-run | --reembed-only]
 
 Older imports split long header sections into length-based parts titled
 ``T``, ``T (2)``, ``T (3)`` (see ``splitter._part_title``). Chapters are now
@@ -16,14 +16,21 @@ kept whole, so this folds each such run into its first chapter:
   * the novel's Qdrant vectors are rebuilt.
 
 One transaction per novel. ``--dry-run`` prints the plan and changes nothing.
+The vector rebuild runs after the commit; if it fails the script says so, goes
+on with the other novels and exits non-zero. ``--reembed-only`` rebuilds the
+vectors for the given/all novels without merging (the recovery for that case).
+
+Stop the backend (or at least translation) before running: a translation
+written while chapters are being re-indexed can land on the wrong chapter.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from dataclasses import dataclass
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..common.logging import get_logger
@@ -52,6 +59,8 @@ class MergePlan:
     mapping: dict[int, int]
     chapters_before: int
     chapters_after: int
+    # (run, language) translations dropped because some part was untranslated.
+    dropped_translations: int = 0
 
 
 def find_runs(titles: list[str | None]) -> list[list[int]]:
@@ -107,6 +116,18 @@ def plan_for(novel_id: int, chapters: list[Chapter]) -> MergePlan:
     )
 
 
+def _count_dropped(chapters: list[Chapter], runs: list[list[int]]) -> int:
+    by_idx = {c.idx: c for c in chapters}
+    n = 0
+    for run in runs:
+        parts = [by_idx[i] for i in run]
+        per = [{t.target_lang: t for t in c.translations} for c in parts]
+        for lang in {lang for d in per for lang in d}:
+            if not all(_complete(d.get(lang)) for d in per):
+                n += 1
+    return n
+
+
 def merge_novel(
     session: Session, novel_id: int, *, dry_run: bool = False
 ) -> MergePlan:
@@ -117,11 +138,13 @@ def merge_novel(
         )
     )
     plan = plan_for(novel_id, chapters)
+    plan.dropped_translations = _count_dropped(chapters, plan.runs)
     if dry_run or not plan.runs:
         return plan
 
     by_idx = {c.idx: c for c in chapters}
     dropped: set[int] = set()
+    lost_runs: list[list[int]] = []
     for run in plan.runs:
         parts = [by_idx[i] for i in run]
         head, rest = parts[0], parts[1:]
@@ -138,11 +161,21 @@ def merge_novel(
                 head_tr.text = _JOIN.join(r.text for r in rows)
                 head_tr.pieces_done = None
                 # The head's translated title stays: it names the whole chapter.
-            elif head_tr is not None:
-                session.delete(head_tr)
+            else:
+                if head_tr is not None:
+                    session.delete(head_tr)
+                lost_runs.append(run)
         for c in rest:
             dropped.add(c.idx)
             session.delete(c)
+    # QA flags describe the translation that was dropped; they would point at
+    # a text that no longer exists.
+    for run in lost_runs:
+        session.execute(
+            delete(ReviewFlag).where(
+                ReviewFlag.novel_id == novel_id, ReviewFlag.chapter_idx.in_(run)
+            )
+        )
     session.flush()
 
     # Re-index survivors in ascending order; every new idx is <= the old one,
@@ -199,13 +232,33 @@ async def _rebuild_vectors(novel_id: int) -> int:
         return await embed_chapters(novel_id, chaps)
 
 
-async def _run(novel_id: int | None, dry_run: bool) -> None:
+async def _safe_rebuild(nid: int) -> bool:
+    try:
+        n = await _rebuild_vectors(nid)
+    except Exception as e:  # noqa: BLE001 - report and carry on with other novels
+        print(
+            f"  Vectors for novel {nid} could not be rebuilt: {e}. "
+            f'Run `make reembed ARGS="--novel {nid}"`'
+        )
+        return False
+    print(f"  re-embedded {n} chunks")
+    return True
+
+
+async def _run(novel_id: int | None, dry_run: bool, reembed_only: bool = False) -> int:
+    """Returns the number of novels whose vector rebuild failed."""
     with get_session() as s:
         q = select(Novel.id).order_by(Novel.id)
         if novel_id is not None:
             q = q.where(Novel.id == novel_id)
         ids = list(s.scalars(q))
+    failed = 0
     for nid in ids:
+        if reembed_only:
+            print(f"novel {nid}: rebuilding vectors")
+            if not await _safe_rebuild(nid):
+                failed += 1
+            continue
         with get_session() as s:
             plan = merge_novel(s, nid, dry_run=dry_run)
         if not plan.runs:
@@ -218,17 +271,26 @@ async def _run(novel_id: int | None, dry_run: bool) -> None:
         )
         for run in plan.runs:
             print(f"  chapters {run[0]}..{run[-1]} ({len(run)} parts) -> {plan.mapping[run[0]]}")
-        if not dry_run:
-            n = await _rebuild_vectors(nid)
-            print(f"  re-embedded {n} chunks")
+        word = "will be" if dry_run else "were"
+        print(
+            f"  {plan.dropped_translations} existing translation(s) {word} dropped "
+            "because some part was untranslated"
+        )
+        if not dry_run and not await _safe_rebuild(nid):
+            failed += 1
+    return failed
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--novel", type=int, default=None)
-    ap.add_argument("--dry-run", action="store_true")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--reembed-only", action="store_true")
     args = ap.parse_args()
-    asyncio.run(_run(args.novel, args.dry_run))
+    failed = asyncio.run(_run(args.novel, args.dry_run, args.reembed_only))
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

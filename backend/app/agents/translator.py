@@ -192,10 +192,13 @@ _TITLE_SYSTEM = (
 _QUOTES = "\"'`“”‘’「」『』"
 
 
+_TITLE_MAX = 512
+
+
 def _clean_title(raw: object) -> str:
-    """One line, no wrapping quotes, whitespace collapsed."""
+    """One line, no wrapping quotes, whitespace collapsed, at most 512 chars."""
     text = " ".join(str(raw or "").split())
-    return text.strip(_QUOTES + " ").strip()
+    return text.strip(_QUOTES + " ").strip()[:_TITLE_MAX]
 
 
 def _title_glossary(titles: Iterable[str], glossary: list[tuple[str, str]]) -> str:
