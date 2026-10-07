@@ -1,0 +1,17 @@
+/* Glossary term highlighting inside .reader-text. Colours mix with the reader
+   foreground so they stay legible on both light and dark reader themes. */
+.term {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.term-character { --term-c: #e0527a; }
+.term-sect      { --term-c: #3b9a6a; }
+.term-realm     { --term-c: #8a5cf5; }
+.term-technique { --term-c: #e08a1e; }
+.term-item      { --term-c: #2f8fd0; }
+.term-other     { --term-c: #8a8a8a; }
+.term[class*="term-"] {
+  color: color-mix(in srgb, var(--term-c) 60%, var(--r-fg, currentColor));
+  text-decoration-color: color-mix(in srgb, var(--term-c) 70%, transparent);
+}
