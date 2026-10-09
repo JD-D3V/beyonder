@@ -111,6 +111,13 @@ class IngestUrlIn(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     urls: list[str] = Field(min_length=1)
     source_lang: Optional[str] = None
+    # Table-of-contents page for later "check for new chapters"; defaults to
+    # the first URL.
+    index_url: Optional[str] = Field(default=None, max_length=1024)
+
+
+class UpdateCheckResult(BaseModel):
+    added: int
 
 
 class IngestResult(BaseModel):

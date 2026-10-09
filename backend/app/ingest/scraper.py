@@ -251,3 +251,8 @@ async def scrape_many(urls: list[str], concurrency: int = 3) -> list[ScrapedPage
                 return ScrapedPage(url=u, title=None, text="")
 
     return await asyncio.gather(*[_one(u) for u in urls])
+
+
+async def fetch_html(url: str) -> str:
+    """SSRF-guarded fetch of a page's raw HTML."""
+    return await _fetch(url)

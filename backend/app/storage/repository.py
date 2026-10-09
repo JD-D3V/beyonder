@@ -86,6 +86,7 @@ def insert_chapter(
     idx: int,
     title: str | None,
     source_text: str,
+    source_url: str | None = None,
 ) -> Chapter:
     chap = Chapter(
         novel_id=novel_id,
@@ -93,6 +94,7 @@ def insert_chapter(
         title=title,
         source_text=source_text,
         char_count=len(source_text),
+        source_url=source_url,
     )
     session.add(chap)
     session.flush()
@@ -760,7 +762,10 @@ def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
     novel = session.get(Novel, novel_id)
     if novel is None:
         return None
-    allowed = {"title", "title_en", "author", "description", "tags", "status", "source_lang"}
+    allowed = {
+        "title", "title_en", "author", "description", "tags", "status",
+        "source_lang", "source_index_url",
+    }
     for key, value in fields.items():
         if key in allowed and value is not None:
             setattr(novel, key, value)

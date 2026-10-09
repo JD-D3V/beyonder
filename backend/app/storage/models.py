@@ -62,6 +62,8 @@ class Novel(Base):
     status: Mapped[str] = mapped_column(String(16), default="ongoing")
     source_lang: Mapped[str] = mapped_column(String(8), default="zh")
     source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # Table-of-contents page that new chapters are discovered from.
+    source_index_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -93,6 +95,8 @@ class Chapter(Base):
     title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     source_text: Mapped[str] = mapped_column(Text)
     char_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Page this chapter was scraped from (URL imports only).
+    source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
     novel: Mapped[Novel] = relationship(back_populates="chapters")
     translations: Mapped[list["Translation"]] = relationship(

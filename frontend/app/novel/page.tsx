@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
 import Reviews from "../../components/Reviews";
+import { siteApi } from "../../lib/api-site";
 import { social } from "../../lib/api-social";
 import {
   IconBookOpen,
@@ -100,6 +101,37 @@ function CoverAdmin({ novelId, hasCover, onChanged }: { novelId: number; hasCove
             Remove cover
           </button>
         )}
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
+function UpdateCheck({ novelId, onChanged }: { novelId: number; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  async function run() {
+    setBusy(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const { added } = await siteApi.checkUpdates(novelId);
+      setMsg(added ? `Added ${added} new chapter${added === 1 ? "" : "s"}.` : "No new chapters.");
+      if (added) onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <div className="row">
+        <button className="secondary" disabled={busy} onClick={run}>
+          {busy ? "Checking..." : "Check for new chapters"}
+        </button>
+        {msg && <span className="muted small" role="status">{msg}</span>}
       </div>
       {err && <div className="error">{err}</div>}
     </div>
@@ -573,6 +605,7 @@ function BookInner() {
                     onChanged={load}
                   />
                 )}
+                {isAdmin && <UpdateCheck novelId={novel.id} onChanged={load} />}
                 <div className="stat-row">
                   <div className="stat">
                     <span className="v">{novel.chapter_count}</span>
