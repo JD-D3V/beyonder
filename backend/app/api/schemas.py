@@ -22,6 +22,14 @@ class NovelOut(BaseModel):
     char_count: int = 0
     translated_count: int = 0
     updated_at: Optional[str] = None
+    views_total: int = 0
+
+
+class RankedNovelOut(NovelOut):
+    """A catalog entry with its place in a ranking window."""
+
+    views: int = 0
+    rank: int = 0
 
 
 class LibraryItemOut(NovelOut):

@@ -18,12 +18,13 @@ Schema design notes
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -278,3 +279,16 @@ class ReviewFlag(Base):
     resolved_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+
+class NovelDailyStat(Base):
+    """Per-novel, per-day view counters that feed the rankings."""
+
+    __tablename__ = "novel_daily_stats"
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    views: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    readers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
