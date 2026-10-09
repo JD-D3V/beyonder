@@ -21,6 +21,9 @@ from ..ingest.lang import detect_lang
 from ..ingest.pdf_loader import load_pdf
 from ..ingest.scraper import FetchTooLarge, UnsafeURL, fetch_bytes_guarded, scrape_many
 from ..ingest.splitter import split_chapters
+from ..ingest.updates import (
+    NovelNotFound, UpdateCheckUnavailable, check_novel_updates,
+)
 from ..ingest.txt_loader import load_txt
 from ..llm.resolve import resolve_llm
 from ..storage.db import get_session
@@ -57,6 +60,7 @@ from .schemas import (
     EmbedIn,
     EmbedResult,
     IngestResult,
+    UpdateCheckResult,
     IngestTextIn,
     IngestUrlIn,
     GlossaryEntryOut,
@@ -597,17 +601,46 @@ async def ingest_url(
         parsed = parsed_pages
     with get_session() as s:
         novel = create_novel(s, title=body.title, source_lang=lang)
+        update_novel(
+            s, novel.id, source_index_url=(body.index_url or body.urls[0])[:1024]
+        )
+        # One chapter per page is the only case where a chapter's URL is known.
+        per_page = len(parsed) == len(pages) and all(p.text.strip() for p in pages)
         n = 0
-        for c in parsed:
+        for i, c in enumerate(parsed):
             insert_chapter(
                 s,
                 novel_id=novel.id,
                 idx=c.idx,
                 title=c.title,
                 source_text=c.text,
+                source_url=pages[i].url[:1024] if per_page else None,
             )
             n += 1
         return IngestResult(novel_id=novel.id, chapters_added=n)
+
+
+@router.post("/novels/{novel_id}/check-updates", response_model=UpdateCheckResult)
+async def check_updates(
+    novel_id: int, _admin: User = Depends(require_admin)
+) -> UpdateCheckResult:
+    """Scrape chapters that appeared on the source index since the import."""
+    try:
+        added = await check_novel_updates(novel_id)
+    except NovelNotFound:
+        raise HTTPException(404, "novel not found")
+    except UpdateCheckUnavailable as e:
+        raise HTTPException(409, str(e))
+    except UnsafeURL as e:
+        log.warning("check_updates.unsafe_url", reason=str(e))
+        raise HTTPException(
+            400,
+            detail={
+                "code": "unsafe_url",
+                "detail": "The source URL can't be fetched (only public http/https addresses are allowed).",
+            },
+        )
+    return UpdateCheckResult(added=added)
 
 
 @router.post("/novels/embed", response_model=EmbedResult)

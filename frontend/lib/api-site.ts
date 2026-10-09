@@ -48,6 +48,8 @@ export const siteApi = {
     req<AdminReport[]>(`/admin/reports?resolved=${resolved}`),
   resolveReport: (id: number) =>
     req<{ ok: boolean }>(`/admin/reports/${id}/resolve`, { method: "POST" }),
+  checkUpdates: (novelId: number) =>
+    req<{ added: number }>(`/novels/${novelId}/check-updates`, { method: "POST" }),
   deleteComment: (id: number) => req<void>(`/comments/${id}`, { method: "DELETE" }),
   deleteReview: (id: number) => req<void>(`/reviews/${id}`, { method: "DELETE" }),
 };
