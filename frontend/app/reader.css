@@ -204,3 +204,10 @@
   white-space: normal;
 }
 .rset-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Reader text and chrome follow the reader theme, not the site theme, so a
+   dark reader inside a light site (or the reverse) stays legible. */
+.reader-root .reader-title { color: var(--r-fg); }
+.reader-root .reader-toolbar,
+.reader-root .reader-toolbar span { color: var(--r-fg); }
+.reader-root .reader-toolbar { background: var(--r-page); border-color: var(--r-border); }
