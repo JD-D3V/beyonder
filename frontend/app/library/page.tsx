@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import BookCover from "../../components/BookCover";
 import { IconBookOpen, IconX } from "../../components/icons";
 import { api, displayTitle, errorText, LibraryItem, LibraryOut, Shelf } from "../../lib/api";
+import { SiteStats } from "../../lib/api-site";
 import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
 
 const SHELVES: { key: Shelf; label: string }[] = [
@@ -125,13 +126,16 @@ function LibraryBody() {
           const pct = n.chapter_count
             ? Math.min(100, Math.round(((n.current_chapter + 1) / n.chapter_count) * 100))
             : 0;
+          const st = n as LibraryItem & SiteStats;
+          const fresh = Math.max(0, n.chapter_count - 1 - n.current_chapter);
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} />
                 <div className="body">
                   <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
+                  {fresh > 0 && <span className="pill new-badge">{fresh} new</span>}
                   <div className="meter" aria-hidden="true">
                     <span style={{ width: `${pct}%` }} />
                   </div>
@@ -148,7 +152,7 @@ function LibraryBody() {
                   className="small"
                   href={`/reader?novel=${n.id}&ch=${n.current_chapter}`}
                 >
-                  <IconBookOpen size={14} /> Continue reading
+                  <IconBookOpen size={14} /> Continue
                 </Link>
                 <div className="row" style={{ gap: 6 }}>
                   <select
