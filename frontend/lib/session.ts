@@ -28,6 +28,7 @@ export interface SessionUser {
   id: number;
   email: string;
   is_admin: boolean;
+  display_name?: string | null;
 }
 
 export interface Session {

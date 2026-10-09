@@ -130,6 +130,7 @@ export interface AuthUser {
   id: number;
   email: string;
   is_admin: boolean;
+  display_name?: string | null;
 }
 
 export interface AuthResult {
@@ -487,7 +488,7 @@ export const api = {
   // --- accounts ---
   login: (body: { email: string; password: string }) =>
     req<AuthResult>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
-  signup: (body: { email: string; password: string; invite: string }) =>
+  signup: (body: { email: string; password: string; invite: string; display_name?: string }) =>
     req<AuthResult>("/auth/signup", { method: "POST", body: JSON.stringify(body) }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   me: () => req<AuthUser>("/auth/me"),

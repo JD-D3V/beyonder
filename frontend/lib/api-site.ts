@@ -1,4 +1,4 @@
-import { req } from "./api";
+import { req, type AuthUser } from "./api";
 
 // Fields the backend adds to every catalog entry (views, ratings, cover).
 export interface SiteStats {
@@ -49,7 +49,9 @@ export const siteApi = {
   resolveReport: (id: number) =>
     req<{ ok: boolean }>(`/admin/reports/${id}/resolve`, { method: "POST" }),
   checkUpdates: (novelId: number) =>
-    req<{ added: number }>(`/novels/${novelId}/check-updates`, { method: "POST" }),
+    req<{ added: number; embedded?: boolean; hint?: string | null }>(`/novels/${novelId}/check-updates`, { method: "POST" }),
+  setDisplayName: (display_name: string | null) =>
+    req<AuthUser>("/auth/me", { method: "PATCH", body: JSON.stringify({ display_name }) }),
   deleteComment: (id: number) => req<void>(`/comments/${id}`, { method: "DELETE" }),
   deleteReview: (id: number) => req<void>(`/reviews/${id}`, { method: "DELETE" }),
 };

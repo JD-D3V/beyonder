@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [invite, setInvite] = useState("");
+  const [publicName, setPublicName] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -23,7 +24,12 @@ export default function LoginPage() {
       const r =
         mode === "signin"
           ? await api.login({ email: email.trim(), password })
-          : await api.signup({ email: email.trim(), password, invite: invite.trim() });
+          : await api.signup({
+              email: email.trim(),
+              password,
+              invite: invite.trim(),
+              ...(publicName.trim() ? { display_name: publicName.trim() } : {}),
+            });
       setSession({ token: r.token, user: r.user });
       const next = safeNext(new URLSearchParams(window.location.search).get("next"));
       router.push(next || "/");
@@ -62,6 +68,24 @@ export default function LoginPage() {
           />
           {mode === "signup" && <div className="muted small">At least 8 characters</div>}
         </div>
+        {mode === "signup" && (
+          <div className="field">
+            <label htmlFor="public-name">Public name (optional)</label>
+            <input
+              id="public-name"
+              type="text"
+              value={publicName}
+              minLength={3}
+              maxLength={24}
+              pattern="[A-Za-z0-9_\-]{3,24}"
+              autoComplete="nickname"
+              onChange={(e) => setPublicName(e.target.value)}
+            />
+            <div className="muted small">
+              Shown on your reviews and comments. 3-24 letters, digits, - or _. Never your email.
+            </div>
+          </div>
+        )}
         {mode === "signup" && (
           <div className="field">
             <label htmlFor="invite">Invite code</label>

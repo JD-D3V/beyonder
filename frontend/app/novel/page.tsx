@@ -116,8 +116,9 @@ function UpdateCheck({ novelId, onChanged }: { novelId: number; onChanged: () =>
     setMsg(null);
     setErr(null);
     try {
-      const { added } = await siteApi.checkUpdates(novelId);
-      setMsg(added ? `Added ${added} new chapter${added === 1 ? "" : "s"}.` : "No new chapters.");
+      const { added, hint } = await siteApi.checkUpdates(novelId);
+      const base = added ? `Added ${added} new chapter${added === 1 ? "" : "s"}.` : "No new chapters.";
+      setMsg(hint ? `${base} ${hint}` : base);
       if (added) onChanged();
     } catch (e) {
       setErr(errorText(e));

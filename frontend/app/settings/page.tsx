@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { siteApi } from "../../lib/api-site";
+import { getSession, setSession } from "../../lib/session";
 import { IconExternalLink, IconKeyRound } from "../../components/icons";
 import {
   clearLlmConfig,
@@ -22,9 +24,15 @@ export default function SettingsPage() {
   const [model, setModel] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [siteTheme, setSiteTheme] = useState<SiteTheme>("system");
+  const [signedIn, setSignedIn] = useState(false);
+  const [pubName, setPubName] = useState("");
+  const [nameNote, setNameNote] = useState<string | null>(null);
 
   useEffect(() => {
     setSiteTheme(loadSiteTheme());
+    const sess = getSession();
+    setSignedIn(!!sess);
+    setPubName(sess?.user.display_name || "");
     const c = getLlmConfig();
     if (c) {
       setProvider(c.provider);
@@ -53,6 +61,19 @@ export default function SettingsPage() {
     setNote("Key removed.");
   }
 
+  async function saveName() {
+    setNameNote(null);
+    try {
+      const u = await siteApi.setDisplayName(pubName.trim() || null);
+      const sess = getSession();
+      if (sess) setSession({ ...sess, user: { ...sess.user, display_name: u.display_name ?? null } });
+      setPubName(u.display_name || "");
+      setNameNote(u.display_name ? "Public name saved." : "Public name cleared.");
+    } catch (e) {
+      setNameNote(e instanceof Error ? e.message : "Could not save.");
+    }
+  }
+
   function chooseTheme(t: SiteTheme) {
     setSiteTheme(t);
     saveSiteTheme(t);
@@ -79,6 +100,30 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
+      {signedIn && (
+        <>
+          <h2>Public name</h2>
+          <p className="small muted">
+            Shown on your reviews and comments. 3-24 letters, digits, - or _.
+            If blank you appear as reader-&lt;number&gt;. Your email is never shown.
+          </p>
+          <div className="field">
+            <label htmlFor="public-name">Public name</label>
+            <input
+              id="public-name"
+              type="text"
+              value={pubName}
+              maxLength={24}
+              autoComplete="nickname"
+              onChange={(e) => setPubName(e.target.value)}
+            />
+          </div>
+          {nameNote && <div className="notice" role="status">{nameNote}</div>}
+          <div className="row" style={{ marginBottom: 18 }}>
+            <button onClick={saveName}>Save name</button>
+          </div>
+        </>
+      )}
       <h2>AI key</h2>
       <p className="small muted">
         Translation and questions use your own AI key. The key stays in this

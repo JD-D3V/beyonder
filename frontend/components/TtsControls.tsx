@@ -24,6 +24,7 @@ export default function TtsControls({
   const run = useRef(0); // bumped to invalidate in-flight utterances
   const paras = useRef<HTMLElement[]>([]);
   const pos = useRef(0);
+  const stale = useRef(false); // voice/speed changed while paused
   const cur = useRef<HTMLElement | null>(null);
   const opts = useRef({ voiceURI: "", rate: 1, voices: [] as SpeechSynthesisVoice[] });
   opts.current = { voiceURI, rate, voices };
@@ -59,6 +60,7 @@ export default function TtsControls({
     }
     clearMark();
     pos.current = 0;
+    stale.current = false;
     setStatus("idle");
   }, []);
 
@@ -104,6 +106,15 @@ export default function TtsControls({
   function play() {
     const synth = window.speechSynthesis;
     if (status === "paused") {
+      if (stale.current) {
+        // Re-speak the current paragraph with the new voice/speed. Clear the
+        // engine's paused flag first or the new utterance would stay silent.
+        stale.current = false;
+        synth.cancel();
+        synth.resume();
+        speakAt(pos.current);
+        return;
+      }
       synth.resume();
       setStatus("playing");
       return;
@@ -118,14 +129,16 @@ export default function TtsControls({
     setStatus("paused");
   }
 
-  // Voice/speed changes apply from the paragraph being read.
+  // Voice/speed changes apply from the paragraph being read; while paused
+  // they wait for Resume so playback never starts on its own.
   const first = useRef(true);
   useEffect(() => {
     if (first.current) {
       first.current = false;
       return;
     }
-    if (status !== "idle") speakAt(pos.current);
+    if (status === "playing") speakAt(pos.current);
+    else if (status === "paused") stale.current = true; // applied on resume
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rate, voiceURI]);
 
@@ -139,6 +152,7 @@ export default function TtsControls({
       cur.current?.classList.remove("tts-active");
       cur.current = null;
       pos.current = 0;
+      stale.current = false;
       setStatus("idle");
     };
   }, [chapterKey]);
