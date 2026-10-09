@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
+import Reviews from "../../components/Reviews";
+import { social } from "../../lib/api-social";
 import {
   IconBookOpen,
   IconCheck,
@@ -49,6 +51,59 @@ function compactNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
   return String(n);
+}
+
+function CoverAdmin({ novelId, hasCover, onChanged }: { novelId: number; hasCover: boolean; onChanged: () => void }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      setUrl("");
+      onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <label>Cover (admin)</label>
+      <div className="row">
+        <input
+          type="file"
+          accept="image/*"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) run(() => social.uploadCover(novelId, f));
+          }}
+        />
+      </div>
+      <div className="row">
+        <input
+          type="url"
+          placeholder="or paste an image URL"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button className="secondary" disabled={busy || !url.trim()} onClick={() => run(() => social.setCoverUrl(novelId, url.trim()))}>
+          Set from URL
+        </button>
+        {hasCover && (
+          <button className="secondary" disabled={busy} onClick={() => run(() => social.removeCover(novelId))}>
+            Remove cover
+          </button>
+        )}
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -511,6 +566,13 @@ function BookInner() {
                   ))}
                 </div>
                 {novel.description && <p>{novel.description}</p>}
+                {isAdmin && (
+                  <CoverAdmin
+                    novelId={novel.id}
+                    hasCover={Boolean((novel as { has_cover?: boolean }).has_cover)}
+                    onChanged={load}
+                  />
+                )}
                 <div className="stat-row">
                   <div className="stat">
                     <span className="v">{novel.chapter_count}</span>
@@ -807,6 +869,7 @@ function BookInner() {
         </div>
       </div>
       )}
+      <Reviews novelId={novel.id} session={session} />
     </>
   );
 }

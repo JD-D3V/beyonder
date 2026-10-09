@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import ChapterComments from "../../components/ChapterComments";
 import GlossaryText from "../../components/GlossaryText";
 import {
   IconBookmark,
@@ -25,6 +26,7 @@ import {
   IconType,
 } from "../../components/icons";
 import ReaderSettings from "../../components/ReaderSettings";
+import TtsControls from "../../components/TtsControls";
 import {
   api,
   ApiError,
@@ -755,6 +757,15 @@ function ReaderInner() {
     );
   }
 
+  // Paragraphs of the chapter being read, for read-aloud.
+  const ttsParagraphs = () => {
+    const sec = articleRef.current?.querySelector<HTMLElement>(`section[data-ch="${curIdx}"]`);
+    if (!sec) return [];
+    let ps = Array.from(sec.querySelectorAll<HTMLElement>(".reader-text:not(.source) p"));
+    if (ps.length === 0) ps = Array.from(sec.querySelectorAll<HTMLElement>(".reader-text p"));
+    return ps;
+  };
+
   const progressLabel = `Ch. ${curIdx + 1}${chapters.length ? ` / ${chapters.length}` : ""}`;
 
   // Floating bottom toolbar: Prev · Ch. N / total · Next · Display/Settings.
@@ -785,6 +796,7 @@ function ReaderInner() {
       <button className="secondary" onClick={() => go(curIdx + 1)} disabled={!hasNext}>
         Next <IconChevronRight size={16} />
       </button>
+      <TtsControls chapterKey={curIdx} getParagraphs={ttsParagraphs} />
       <button
         className="secondary icon-btn"
         onClick={() => setShowSettings((v) => !v)}
@@ -923,6 +935,15 @@ function ReaderInner() {
 
           {chapter && renderBody(chapter, view)}
           {chapter && renderMeta(chapter)}
+          {chapter && (
+            <ChapterComments
+              key={`c${chapterIdx}-${infinite}`}
+              novelId={novelId}
+              idx={chapterIdx}
+              session={session}
+              collapsed={infinite}
+            />
+          )}
         </section>
 
         {infinite &&
@@ -973,6 +994,7 @@ function ReaderInner() {
                 )}
                 {it.err && <div className="error">{it.err}</div>}
                 {renderBody(c, v)}
+                <ChapterComments novelId={novelId} idx={it.idx} session={session} collapsed />
               </section>
             );
           })}
