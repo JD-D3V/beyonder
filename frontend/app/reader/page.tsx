@@ -41,6 +41,7 @@ import {
 import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
 import {
   DEFAULT_PREFS,
+  FONT_STACKS,
   loadPrefs,
   ReaderPrefs,
   savePrefs,
@@ -49,6 +50,45 @@ import {
 type View = "translation" | "source" | "both";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// A chapter appended below the root one in infinite mode.
+interface StreamItem {
+  idx: number;
+  chapter: ChapterDetail;
+  err: string | null;
+  busy: boolean;
+  progress: string | null;
+  keyNeeded: boolean;
+  keyRejected: boolean;
+}
+
+// Maps a translate failure onto UI state. reload: the chapter was already
+// translated elsewhere, so just refetch it.
+function classifyTranslateError(e: unknown): {
+  err?: string;
+  keyNeeded?: boolean;
+  keyRejected?: boolean;
+  reload?: boolean;
+} {
+  if (e instanceof KeyRequiredError) return { keyNeeded: true };
+  if (e instanceof ApiError && e.code === "already_translated") return { reload: true };
+  if (e instanceof ApiError && e.code === "llm_rate_limited")
+    return { err: "The AI provider is rate-limiting your key, try again in a minute." };
+  if (e instanceof ApiError && e.code === "llm_key_invalid") return { keyRejected: true };
+  return { err: errorText(e) };
+}
+
+// Source text as paragraphs, split on blank lines like the translation.
+function SourceText({ text }: { text: string }) {
+  const paras = text.split(/\n[ \t]*\n+/).filter((p) => p.trim() !== "");
+  return (
+    <>
+      {paras.map((p, i) => (
+        <p key={i}>{p}</p>
+      ))}
+    </>
+  );
+}
 
 // Layout effects warn when rendered on the server; the static export
 // prerenders this page, so only use one in the browser.
@@ -67,7 +107,21 @@ function ReaderInner() {
   const params = useSearchParams();
   const router = useRouter();
   const novelId = Number(params.get("novel") || "0");
-  const chapterIdx = Number(params.get("ch") || "0");
+  const urlIdx = Number(params.get("ch") || "0");
+
+  // chapterIdx is the chapter that roots the page. In infinite mode the URL
+  // `ch` param follows the chapter being read (history.replaceState); those
+  // echoes must not re-root the page, so they are remembered and ignored.
+  const replaced = useRef<Set<number>>(new Set());
+  const [prevUrl, setPrevUrl] = useState(urlIdx);
+  const [chapterIdx, setRoot] = useState(urlIdx);
+  if (urlIdx !== prevUrl) {
+    setPrevUrl(urlIdx);
+    if (!replaced.current.has(urlIdx)) {
+      replaced.current.clear();
+      setRoot(urlIdx);
+    }
+  }
 
   const [session, setSession] = useState<Session | null>(null);
   const [prefs, setPrefs] = useState<ReaderPrefs>(DEFAULT_PREFS);
@@ -93,6 +147,20 @@ function ReaderInner() {
   const [askErr, setAskErr] = useState<string | null>(null);
   const [askKeyNeeded, setAskKeyNeeded] = useState(false);
   const [askKeyRejected, setAskKeyRejected] = useState(false);
+
+  // Infinite mode: chapters appended after the root one.
+  const infinite = prefs.readerType === "infinite";
+  const [stream, setStream] = useState<StreamItem[]>([]);
+  const [activeIdx, setActiveIdx] = useState(chapterIdx);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreErr, setMoreErr] = useState<string | null>(null);
+  const streamRef = useRef<StreamItem[]>([]);
+  streamRef.current = stream;
+  const streamGen = useRef(0);
+  const fetchingMore = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const articleRef = useRef<HTMLElement | null>(null);
+  const curIdx = infinite ? activeIdx : chapterIdx;
 
   const signedIn = session !== null;
   const isAdmin = Boolean(session?.user.is_admin);
@@ -164,6 +232,16 @@ function ReaderInner() {
       .catch(() => n === glossSeq.current && setGlossary([]));
   }, [novelId]);
 
+  function resetStream(root: number) {
+    streamGen.current += 1;
+    fetchingMore.current = false;
+    streamRef.current = [];
+    setStream([]);
+    setLoadingMore(false);
+    setMoreErr(null);
+    setActiveIdx(root);
+  }
+
   const flagSeq = useRef(0);
   const loadFlags = useCallback(() => {
     if (!novelId) return;
@@ -187,6 +265,7 @@ function ReaderInner() {
     setErr(null);
     setBusy(false);
     setProgress(null);
+    resetStream(chapterIdx);
     const isCurrent = () => runToken.current === token;
     // Opening a chapter advances server-side progress, which widens what the
     // glossary and flags may show: fetch them again once the load is done.
@@ -207,12 +286,12 @@ function ReaderInner() {
     try {
       const key = "beyonder.anonProgress";
       const cur = JSON.parse(window.localStorage.getItem(key) || "{}");
-      cur[String(novelId)] = chapterIdx;
+      cur[String(novelId)] = curIdx;
       window.localStorage.setItem(key, JSON.stringify(cur));
     } catch {
       // storage blocked; nothing to do
     }
-  }, [novelId, chapterIdx]);
+  }, [novelId, curIdx]);
 
   // Signing in or out changes the horizon too. Keyed on the session only:
   // chapter changes are handled by the load effect above.
@@ -248,6 +327,63 @@ function ReaderInner() {
     if (en) setChapter((c) => (c ? { ...c, title_en: en } : c));
   }
 
+  // The shared translate step loop. Returns the number of new glossary terms,
+  // or null when cancelled (live() went false). Throws on API errors.
+  async function runTranslate(
+    idx: number,
+    charCount: number,
+    force: boolean,
+    live: () => boolean,
+    onProgress: (s: string | null) => void,
+    onTitle: (en: string | null | undefined) => void,
+  ): Promise<number | null> {
+    let added = 0;
+    if (charCount <= CRITIC_MAX_CHARS) {
+      const r = await api.translate({
+        novel_id: novelId,
+        chapter_idx: idx,
+        ...(force ? { force: true } : {}),
+      });
+      added += r.new_terms?.length ?? 0;
+      onTitle(r.title_en);
+      return added;
+    }
+    // Long chapter: resumable, critic-free passes until complete.
+    let stalls = 0;
+    // force resets the saved translation, so send it on the first call only.
+    let first = true;
+    for (;;) {
+      if (!live()) return null;
+      const r = await api.translateStep({
+        novel_id: novelId,
+        chapter_idx: idx,
+        ...(force && first ? { force: true } : {}),
+      });
+      first = false;
+      if (!live()) return null;
+      added += r.new_terms?.length ?? 0;
+      onTitle(r.title_en);
+      if (r.complete) break;
+      if (r.stalled) {
+        stalls += 1;
+        if (stalls > 8) {
+          throw new Error(
+            "The AI provider kept returning unusable output. " +
+              "Progress is saved; resume this later.",
+          );
+        }
+        onProgress("Model returned nothing, retrying...");
+        await sleep(20000);
+      } else {
+        stalls = 0;
+        onProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
+        await sleep(4000); // pace under the 15 req/min free tier
+      }
+      if (!live()) return null;
+    }
+    return added;
+  }
+
   async function translateThis(force = false) {
     if (!chapter) return;
     const token = runToken.current;
@@ -257,62 +393,26 @@ function ReaderInner() {
     setKeyNeeded(false);
     setKeyRejected(false);
     setProgress(null);
-    let added = 0;
     let reload = false;
     try {
-      if (chapter.char_count <= CRITIC_MAX_CHARS) {
-        const r = await api.translate({
-          novel_id: novelId,
-          chapter_idx: chapterIdx,
-          ...(force ? { force: true } : {}),
-        });
-        added += r.new_terms?.length ?? 0;
-        applyTitle(r.title_en);
-      } else {
-        // Long chapter: resumable, critic-free passes until complete.
-        let stalls = 0;
-        // force resets the saved translation, so send it on the first call only.
-        let first = true;
-        for (;;) {
-          if (!live()) return;
-          const r = await api.translateStep({
-            novel_id: novelId,
-            chapter_idx: chapterIdx,
-            ...(force && first ? { force: true } : {}),
-          });
-          first = false;
-          if (!live()) return;
-          added += r.new_terms?.length ?? 0;
-          applyTitle(r.title_en);
-          if (r.complete) break;
-          if (r.stalled) {
-            stalls += 1;
-            if (stalls > 8) {
-              throw new Error(
-                "The AI provider kept returning unusable output. " +
-                  "Progress is saved; resume this later.",
-              );
-            }
-            setProgress("Model returned nothing, retrying...");
-            await sleep(20000);
-          } else {
-            stalls = 0;
-            setProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
-            await sleep(4000); // pace under the 15 req/min free tier
-          }
-          if (!live()) return;
-        }
-      }
+      const added = await runTranslate(
+        chapterIdx,
+        chapter.char_count,
+        force,
+        live,
+        setProgress,
+        applyTitle,
+      );
+      if (added === null) return;
       reload = true;
       if (live()) setNewTerms(added);
     } catch (e) {
       if (!live()) return;
-      if (e instanceof KeyRequiredError) setKeyNeeded(true);
-      else if (e instanceof ApiError && e.code === "already_translated") reload = true;
-      else if (e instanceof ApiError && e.code === "llm_rate_limited")
-        setErr("The AI provider is rate-limiting your key, try again in a minute.");
-      else if (e instanceof ApiError && e.code === "llm_key_invalid") setKeyRejected(true);
-      else setErr(errorText(e));
+      const c = classifyTranslateError(e);
+      if (c.keyNeeded) setKeyNeeded(true);
+      else if (c.reload) reload = true;
+      else if (c.keyRejected) setKeyRejected(true);
+      else setErr(c.err ?? errorText(e));
     }
     if (!live()) return;
     if (reload) {
@@ -323,6 +423,65 @@ function ReaderInner() {
     }
     setBusy(false);
     setProgress(null);
+  }
+
+  function patchItem(idx: number, p: (it: StreamItem) => Partial<StreamItem>) {
+    setStream((s) => s.map((it) => (it.idx === idx ? { ...it, ...p(it) } : it)));
+  }
+
+  // Translate a chapter in the infinite stream. Cancelled with the stream.
+  async function translateItem(idx: number) {
+    const item = streamRef.current.find((it) => it.idx === idx);
+    if (!item) return;
+    const token = runToken.current;
+    const gen = streamGen.current;
+    const live = () => runToken.current === token && streamGen.current === gen;
+    patchItem(idx, () => ({
+      busy: true,
+      err: null,
+      keyNeeded: false,
+      keyRejected: false,
+      progress: null,
+    }));
+    let reload = false;
+    try {
+      const added = await runTranslate(
+        idx,
+        item.chapter.char_count,
+        false,
+        live,
+        (s) => live() && patchItem(idx, () => ({ progress: s })),
+        (en) => {
+          if (en && live()) patchItem(idx, (it) => ({ chapter: { ...it.chapter, title_en: en } }));
+        },
+      );
+      if (added === null) return;
+      reload = true;
+    } catch (e) {
+      if (!live()) return;
+      const c = classifyTranslateError(e);
+      if (c.reload) reload = true;
+      else
+        patchItem(idx, () => ({
+          keyNeeded: Boolean(c.keyNeeded),
+          keyRejected: Boolean(c.keyRejected),
+          err: c.err ?? null,
+        }));
+    }
+    if (!live()) return;
+    if (reload) {
+      try {
+        const c = await api.getChapter(novelId, idx);
+        if (!live()) return;
+        patchItem(idx, () => ({ chapter: c }));
+        loadGlossary();
+      } catch (e) {
+        if (!live()) return;
+        patchItem(idx, () => ({ err: errorText(e) }));
+      }
+    }
+    if (!live()) return;
+    patchItem(idx, () => ({ busy: false, progress: null }));
   }
 
   async function ask() {
@@ -348,32 +507,149 @@ function ReaderInner() {
   }
 
   const last = chapters.length ? chapters[chapters.length - 1].idx : chapterIdx;
-  const hasPrev = chapterIdx > 0;
-  const hasNext = chapterIdx < last;
+  const hasPrev = curIdx > 0;
+  const hasNext = curIdx < last;
+  const lastLoaded = stream.length ? stream[stream.length - 1].idx : chapterIdx;
+  const hasMore = lastLoaded < last;
 
+  // Prev/Next/keyboard jump to a chapter and restart the stream there.
   const go = useCallback(
     (idx: number) => {
+      replaced.current.clear();
+      resetStream(idx);
+      setRoot(idx);
       router.push(`/reader?novel=${novelId}&ch=${idx}`);
       window.scrollTo({ top: 0 });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [router, novelId],
   );
 
   // Keep the key handler's view of position fresh without re-binding.
-  const nav = useRef({ hasPrev, hasNext, chapterIdx, go });
-  nav.current = { hasPrev, hasNext, chapterIdx, go };
+  const nav = useRef({ hasPrev, hasNext, curIdx, go });
+  nav.current = { hasPrev, hasNext, curIdx, go };
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
       if (isTyping(e.target)) return;
       const n = nav.current;
-      if (e.key === "ArrowLeft" && n.hasPrev) n.go(n.chapterIdx - 1);
-      else if (e.key === "ArrowRight" && n.hasNext) n.go(n.chapterIdx + 1);
+      if (e.key === "ArrowLeft" && n.hasPrev) n.go(n.curIdx - 1);
+      else if (e.key === "ArrowRight" && n.hasNext) n.go(n.curIdx + 1);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Fetch the next chapter. One request at a time, never one already shown.
+  const loadMore = useCallback(async () => {
+    if (!novelId || fetchingMore.current) return;
+    const cur = streamRef.current;
+    const next = (cur.length ? cur[cur.length - 1].idx : chapterIdx) + 1;
+    if (next > last) return;
+    fetchingMore.current = true;
+    setLoadingMore(true);
+    const token = runToken.current;
+    const gen = streamGen.current;
+    try {
+      // Fetching also advances server-side progress for signed-in readers.
+      const c = await api.getChapter(novelId, next);
+      if (runToken.current !== token || streamGen.current !== gen) return;
+      const item: StreamItem = {
+        idx: next,
+        chapter: c,
+        err: null,
+        busy: false,
+        progress: null,
+        keyNeeded: false,
+        keyRejected: false,
+      };
+      streamRef.current = [...streamRef.current.filter((x) => x.idx !== next), item];
+      setStream(streamRef.current);
+      loadGlossary();
+    } catch (e) {
+      if (runToken.current !== token || streamGen.current !== gen) return;
+      setMoreErr(errorText(e));
+    } finally {
+      if (streamGen.current === gen) {
+        fetchingMore.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, [novelId, chapterIdx, last, loadGlossary]);
+
+  const rootLoaded = chapter !== null;
+  useEffect(() => {
+    if (!infinite || !rootLoaded || !hasMore || moreErr || chapters.length === 0) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "600px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [infinite, rootLoaded, hasMore, moreErr, chapters.length, stream.length, loadingMore, loadMore]);
+
+  // The chapter whose heading last crossed the top is the one being read.
+  useEffect(() => {
+    if (!infinite) return;
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const secs = articleRef.current?.querySelectorAll<HTMLElement>("[data-ch]");
+      if (!secs || secs.length === 0) return;
+      let cur = Number(secs[0].dataset.ch);
+      secs.forEach((el) => {
+        if (el.getBoundingClientRect().top <= 120) cur = Number(el.dataset.ch);
+      });
+      setActiveIdx(cur);
+    };
+    const onScroll = () => {
+      if (!raf) raf = window.requestAnimationFrame(update);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [infinite, stream.length]);
+
+  // Reflect the chapter being read in the URL, keeping path and other params.
+  useEffect(() => {
+    if (!infinite || !rootLoaded) return;
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("ch") === String(activeIdx)) return;
+    u.searchParams.set("ch", String(activeIdx));
+    replaced.current.add(activeIdx);
+    window.history.replaceState(window.history.state, "", u.pathname + u.search + u.hash);
+  }, [infinite, rootLoaded, activeIdx]);
+
+  // Flag marker follows the chapter being read.
+  useEffect(() => {
+    if (!infinite || !novelId || activeIdx === chapterIdx) return;
+    const n = ++flagSeq.current;
+    api
+      .flags(novelId, "open", undefined, activeIdx)
+      .then((f) => n === flagSeq.current && setFlagCount(f.length))
+      .catch(() => n === flagSeq.current && setFlagCount(0));
+  }, [infinite, novelId, activeIdx, chapterIdx]);
+
+  // Leaving infinite mode: single-page view of the chapter being read.
+  const wasInfinite = useRef(infinite);
+  useEffect(() => {
+    if (wasInfinite.current && !infinite) {
+      if (activeIdx !== chapterIdx) setRoot(activeIdx);
+      resetStream(activeIdx);
+      replaced.current.clear();
+    }
+    wasInfinite.current = infinite;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [infinite]);
 
   if (!novelId) {
     return (
@@ -389,15 +665,20 @@ function ReaderInner() {
   const ht = displayTitle(chapter?.title, chapter?.title_en);
   const heading = ht.text || `Chapter ${chapterIdx + 1}`;
   const nvt = novel ? displayTitle(novel.title, novel.title_en) : null;
-  const cssVars = {
-    "--r-font":
-      prefs.font === "serif"
-        ? 'Georgia, "Iowan Old Style", "Times New Roman", serif'
-        : 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  const cssVars: Record<string, string> = {
+    "--r-font": FONT_STACKS[prefs.font],
     "--r-size": `${prefs.size}px`,
     "--r-lh": String(prefs.lineHeight),
     "--r-width": `${prefs.width}px`,
-  } as CSSProperties;
+    "--r-para": `${prefs.paragraphSpacing}em`,
+    "--r-align": prefs.align,
+  };
+  if (prefs.theme === "custom") {
+    cssVars["--r-bg"] = prefs.customBg;
+    cssVars["--r-page"] = prefs.customBg;
+    cssVars["--r-fg"] = prefs.customFg;
+    cssVars["--r-muted"] = `color-mix(in srgb, ${prefs.customFg} 70%, transparent)`;
+  }
 
   const translateLabel = busy
     ? progress || "Translating..."
@@ -405,31 +686,129 @@ function ReaderInner() {
       ? `Resume translation (${chapter.pieces_done} done)`
       : "Translate this chapter";
 
-  const navButtons = (
-    <div className="reader-nav">
-      <button
-        className="secondary"
-        onClick={() => go(chapterIdx - 1)}
-        disabled={!hasPrev}
-      >
+  const textProps = {
+    terms: glossary,
+    termColors: prefs.termColors,
+    quotes: prefs.quotes,
+    brackets: prefs.brackets,
+  };
+
+  // The chapter text in the current view.
+  function renderBody(c: ChapterDetail, v: View) {
+    if (v === "both" && c.translation) {
+      return (
+        <div className="grid-2">
+          <div>
+            <div className="small muted">Source</div>
+            <div className="prose source reader-text">
+              <SourceText text={c.source_text} />
+            </div>
+          </div>
+          <div>
+            <div className="small muted">English</div>
+            <div className="prose reader-text">
+              <GlossaryText text={c.translation} {...textProps} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    if (v === "translation" && c.translation) {
+      return (
+        <div className="prose reader-text">
+          <GlossaryText text={c.translation} {...textProps} />
+        </div>
+      );
+    }
+    if (v === "source") {
+      return (
+        <div className="prose source reader-text">
+          <SourceText text={c.source_text} />
+        </div>
+      );
+    }
+    return null;
+  }
+
+  function renderMeta(c: ChapterDetail) {
+    if (!c.translated_with || view === "source") return null;
+    return (
+      <p className="small muted" style={{ marginTop: 24 }}>
+        {c.complete ? (
+          <>
+            Translated with {c.translated_with}
+            {c.critic_passes
+              ? `, ${c.critic_passes} critic pass${c.critic_passes === 1 ? "" : "es"}`
+              : ""}
+            . Saved, so reopening it costs nothing.
+          </>
+        ) : (
+          <>
+            Partial translation
+            {c.pieces_done != null
+              ? ` — ${c.pieces_done} piece${c.pieces_done === 1 ? "" : "s"} done`
+              : ""}
+            . Press “Resume translation” above to finish it.
+          </>
+        )}
+      </p>
+    );
+  }
+
+  const progressLabel = `Ch. ${curIdx + 1}${chapters.length ? ` / ${chapters.length}` : ""}`;
+
+  // Floating bottom toolbar: Prev · Ch. N / total · Next · Display/Settings.
+  const toolbar = (
+    <div
+      className="reader-nav reader-toolbar"
+      role="toolbar"
+      aria-label="Reader navigation"
+      style={{
+        position: "sticky",
+        bottom: 12,
+        zIndex: 20,
+        justifyContent: "center",
+        flexWrap: "wrap",
+        maxWidth: "var(--r-width)",
+        margin: "0 auto 12px",
+        padding: "8px 12px",
+        background: "var(--r-page)",
+        border: "1px solid var(--r-border)",
+        borderRadius: 999,
+        boxShadow: "0 4px 18px rgba(0, 0, 0, 0.25)",
+      }}
+    >
+      <button className="secondary" onClick={() => go(curIdx - 1)} disabled={!hasPrev}>
         <IconChevronLeft size={16} /> Previous
       </button>
-      <span className="small">
-        {chapterIdx + 1}
-        {chapters.length ? ` of ${chapters.length}` : ""}
-      </span>
-      <button
-        className="secondary"
-        onClick={() => go(chapterIdx + 1)}
-        disabled={!hasNext}
-      >
+      <span className="small">{progressLabel}</span>
+      <button className="secondary" onClick={() => go(curIdx + 1)} disabled={!hasNext}>
         Next <IconChevronRight size={16} />
+      </button>
+      <button
+        className="secondary icon-btn"
+        onClick={() => setShowSettings((v) => !v)}
+        aria-label="Reader display and settings"
+        aria-expanded={showSettings}
+        title="Display and settings"
+      >
+        <IconType size={16} />
       </button>
     </div>
   );
 
+  const divider = (
+    <hr
+      style={{
+        border: 0,
+        borderTop: "1px solid var(--r-border)",
+        margin: "36px 0 28px",
+      }}
+    />
+  );
+
   return (
-    <div className="reader-root" data-theme={prefs.theme} style={cssVars}>
+    <div className="reader-root" data-theme={prefs.theme} style={cssVars as CSSProperties}>
       <div className="reader-top">
         <div className="small reader-crumbs">
           <Link href="/library">Library</Link>
@@ -462,15 +841,6 @@ function ReaderInner() {
               {onReading ? <IconBookmarkCheck size={16} /> : <IconBookmark size={16} />}
             </button>
           )}
-          <button
-            className="secondary icon-btn"
-            onClick={() => setShowSettings((v) => !v)}
-            aria-label="Reader settings"
-            aria-expanded={showSettings}
-            title="Reader settings"
-          >
-            <IconType size={16} />
-          </button>
         </div>
       </div>
 
@@ -479,6 +849,8 @@ function ReaderInner() {
           prefs={prefs}
           onChange={changePrefs}
           onClose={() => setShowSettings(false)}
+          view={view}
+          onViewChange={setView}
         />
       )}
 
@@ -494,141 +866,147 @@ function ReaderInner() {
         </div>
       )}
 
-      <div className="reader-controls">
-        {navButtons}
-        <div className="row" style={{ gap: 8 }}>
-          <div className="seg">
-            <button
-              className={view === "translation" ? "on" : ""}
-              onClick={() => setView("translation")}
-              disabled={!chapter?.translation}
-            >
-              Translation
-            </button>
-            <button
-              className={view === "source" ? "on" : ""}
-              onClick={() => setView("source")}
-            >
-              Source
-            </button>
-            <button
-              className={view === "both" ? "on" : ""}
-              onClick={() => setView("both")}
-              disabled={!chapter?.translation}
-            >
-              Both
-            </button>
-          </div>
-        </div>
-      </div>
+      <article className="reader-page" ref={articleRef}>
+        <section data-ch={chapterIdx}>
+          <h2 className="reader-title" title={ht.hover}>{heading}</h2>
+          {!chapter && !err && <p className="muted">Loading...</p>}
 
-      <article className="reader-page">
-        <h2 className="reader-title" title={ht.hover}>{heading}</h2>
-        {!chapter && !err && <p className="muted">Loading...</p>}
+          {chapter && !chapter.complete && (
+            <div className="translate-box">
+              {signedIn ? (
+                <button onClick={() => translateThis()} disabled={busy}>
+                  {busy ? (
+                    <IconLoaderCircle size={16} className="spin" />
+                  ) : (
+                    <IconSparkles size={16} />
+                  )}{" "}
+                  {translateLabel}
+                </button>
+              ) : (
+                <span className="small muted">
+                  <Link href="/login">Sign in</Link> to translate this chapter.
+                </span>
+              )}
+            </div>
+          )}
 
-        {chapter && !chapter.complete && (
-          <div className="translate-box">
-            {signedIn ? (
-              <button onClick={() => translateThis()} disabled={busy}>
+          {chapter && chapter.complete && isAdmin && (
+            <div className="translate-box">
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "Re-translate this chapter? The saved translation is replaced for every reader.",
+                    )
+                  )
+                    translateThis(true);
+                }}
+                title="Admin: replace the saved translation"
+              >
                 {busy ? (
                   <IconLoaderCircle size={16} className="spin" />
                 ) : (
                   <IconSparkles size={16} />
                 )}{" "}
-                {translateLabel}
+                {busy ? progress || "Translating..." : "Re-translate (force)"}
               </button>
-            ) : (
-              <span className="small muted">
-                <Link href="/login">Sign in</Link> to translate this chapter.
-              </span>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {chapter && chapter.complete && isAdmin && (
-          <div className="translate-box">
+          {newTerms !== null && newTerms > 0 && (
+            <p className="small new-terms">
+              {newTerms} new glossary term{newTerms === 1 ? "" : "s"}
+            </p>
+          )}
+
+          {chapter && renderBody(chapter, view)}
+          {chapter && renderMeta(chapter)}
+        </section>
+
+        {infinite &&
+          stream.map((it) => {
+            const t = displayTitle(it.chapter.title, it.chapter.title_en);
+            const c = it.chapter;
+            const v: View = view === "translation" && !c.translation ? "source" : view;
+            return (
+              <section key={it.idx} data-ch={it.idx}>
+                {divider}
+                <h2 className="reader-title" title={t.hover}>
+                  {t.text || `Chapter ${it.idx + 1}`}
+                </h2>
+                {!c.complete && (
+                  <div className="translate-box">
+                    <p className="small muted" style={{ margin: "0 0 8px" }}>
+                      {c.translation ? "Partially translated." : "Not translated yet."}
+                    </p>
+                    {signedIn ? (
+                      <button onClick={() => translateItem(it.idx)} disabled={it.busy}>
+                        {it.busy ? (
+                          <IconLoaderCircle size={16} className="spin" />
+                        ) : (
+                          <IconSparkles size={16} />
+                        )}{" "}
+                        {it.busy
+                          ? it.progress || "Translating..."
+                          : c.pieces_done != null
+                            ? `Resume translation (${c.pieces_done} done)`
+                            : "Translate this chapter"}
+                      </button>
+                    ) : (
+                      <span className="small muted">
+                        <Link href="/login">Sign in</Link> to translate this chapter.
+                      </span>
+                    )}
+                  </div>
+                )}
+                {it.keyRejected && (
+                  <div className="error">
+                    Your API key was rejected — check <Link href="/settings">Settings</Link>.
+                  </div>
+                )}
+                {it.keyNeeded && (
+                  <div className="error">
+                    Translation needs an AI key. <Link href="/settings">Add your API key</Link>
+                  </div>
+                )}
+                {it.err && <div className="error">{it.err}</div>}
+                {renderBody(c, v)}
+              </section>
+            );
+          })}
+
+        {infinite && hasMore && !moreErr && (
+          <div ref={sentinelRef} aria-hidden="true" style={{ height: 1 }} />
+        )}
+        {infinite && loadingMore && (
+          <p className="small muted" style={{ textAlign: "center" }}>
+            <IconLoaderCircle size={16} className="spin" /> Loading next chapter...
+          </p>
+        )}
+        {infinite && moreErr && (
+          <div className="error">
+            {moreErr}{" "}
             <button
               className="secondary"
-              disabled={busy}
               onClick={() => {
-                if (
-                  window.confirm(
-                    "Re-translate this chapter? The saved translation is replaced for every reader.",
-                  )
-                )
-                  translateThis(true);
+                setMoreErr(null);
+                loadMore();
               }}
-              title="Admin: replace the saved translation"
             >
-              {busy ? (
-                <IconLoaderCircle size={16} className="spin" />
-              ) : (
-                <IconSparkles size={16} />
-              )}{" "}
-              {busy ? progress || "Translating..." : "Re-translate (force)"}
+              Retry
             </button>
           </div>
         )}
-
-        {newTerms !== null && newTerms > 0 && (
-          <p className="small new-terms">
-            {newTerms} new glossary term{newTerms === 1 ? "" : "s"}
+        {infinite && !hasMore && stream.length > 0 && (
+          <p className="small muted" style={{ textAlign: "center", marginTop: 28 }}>
+            End of available chapters.
           </p>
         )}
-
-        {chapter && view === "both" && chapter.translation && (
-          <div className="grid-2">
-            <div>
-              <div className="small muted">Source</div>
-              <div className="prose source">{chapter.source_text}</div>
-            </div>
-            <div>
-              <div className="small muted">English</div>
-              <div className="prose">
-                <GlossaryText text={chapter.translation} terms={glossary} />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {chapter && view === "translation" && chapter.translation && (
-          <div className="prose">
-            <GlossaryText text={chapter.translation} terms={glossary} />
-          </div>
-        )}
-
-        {chapter && view === "source" && (
-          <div className="prose source">{chapter.source_text}</div>
-        )}
-
-        {chapter && chapter.translated_with && view !== "source" && (
-          <p className="small muted" style={{ marginTop: 24 }}>
-            {chapter.complete ? (
-              <>
-                Translated with {chapter.translated_with}
-                {chapter.critic_passes
-                  ? `, ${chapter.critic_passes} critic pass${
-                      chapter.critic_passes === 1 ? "" : "es"
-                    }`
-                  : ""}
-                . Saved, so reopening it costs nothing.
-              </>
-            ) : (
-              <>
-                Partial translation
-                {chapter.pieces_done != null
-                  ? ` — ${chapter.pieces_done} piece${
-                      chapter.pieces_done === 1 ? "" : "s"
-                    } done`
-                  : ""}
-                . Press “Resume translation” above to finish it.
-              </>
-            )}
-          </p>
-        )}
-
-        <div className="reader-foot">{navButtons}</div>
       </article>
+
+      {toolbar}
 
       <div className="reader-side">
         {signedIn && (
@@ -687,12 +1065,12 @@ function ReaderInner() {
               <IconSettings size={16} /> Quick links
             </h3>
             <p className="small">
-              <Link href={`/glossary?novel=${novel.id}&up_to=${chapterIdx}`}>
+              <Link href={`/glossary?novel=${novel.id}&up_to=${curIdx}`}>
                 Glossary up to here
               </Link>
             </p>
             <p className="small">
-              <Link href={`/kg?novel=${novel.id}&up_to=${chapterIdx}`}>
+              <Link href={`/kg?novel=${novel.id}&up_to=${curIdx}`}>
                 Knowledge graph up to here
               </Link>
             </p>
