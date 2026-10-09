@@ -587,40 +587,33 @@ async def ingest_url(
     if not combined.strip():
         raise HTTPException(400, "scrape returned empty text")
     lang = body.source_lang or detect_lang(combined)
-    parsed = split_chapters(combined)
-    one_per_page = False
-    if not parsed:
-        # Fallback: one chapter per page
-        one_per_page = True
-        parsed_pages = []
-        for i, p in enumerate(pages):
-            if p.text.strip():
-                from ..ingest.splitter import ParsedChapter
+    # Split each page on its own: a page that yields exactly one chapter
+    # has a known chapter URL; a page with several headed chapters does not.
+    from ..ingest.splitter import ParsedChapter
 
-                parsed_pages.append(
-                    ParsedChapter(idx=i, title=p.title, text=p.text)
-                )
-        parsed = parsed_pages
+    items: list[tuple[ParsedChapter, str | None]] = []
+    for p in pages:
+        if not p.text.strip():
+            continue
+        got = split_chapters(p.text) or [
+            ParsedChapter(idx=0, title=p.title, text=p.text)
+        ]
+        url = p.url[:1024] if len(got) == 1 else None
+        items.extend((c, url) for c in got)
     with get_session() as s:
         novel = create_novel(s, title=body.title, source_lang=lang)
         update_novel(
             s, novel.id, source_index_url=(body.index_url or body.urls[0])[:1024]
         )
-        # One chapter per page is the only case where a chapter's URL is known.
-        per_page = (
-            one_per_page
-            and len(parsed) == len(pages)
-            and all(p.text.strip() for p in pages)
-        )
         n = 0
-        for i, c in enumerate(parsed):
+        for i, (c, url) in enumerate(items):
             insert_chapter(
                 s,
                 novel_id=novel.id,
-                idx=c.idx,
+                idx=i,
                 title=c.title,
                 source_text=c.text,
-                source_url=pages[i].url[:1024] if per_page else None,
+                source_url=url,
             )
             n += 1
         return IngestResult(novel_id=novel.id, chapters_added=n)

@@ -234,11 +234,9 @@ def test_ingest_url_source_url_only_for_one_chapter_per_page(db_session, monkeyp
             select(Chapter.source_url).where(Chapter.novel_id == r.json()["novel_id"]).order_by(Chapter.idx)
         ).all()
 
-    # Headings inside the pages split them into as many chapters as pages,
-    # but the chapters did not come one-per-page: no URLs recorded.
-    assert run(["Chapter 1\nfirst body text here.", "Chapter 2\nsecond body text here."]) == [None, None]
-    # Splitter finds nothing: the one-chapter-per-page fallback records each URL.
-    monkeypatch.setattr("app.api.novels.split_chapters", lambda text: [])
-    assert run(["just some prose.", "more prose here."]) == [
-        "https://e.example/a/0", "https://e.example/a/1",
+    # One chapter per page: every URL recorded.
+    assert run(["Chapter 1\nfirst body text here.", "Chapter 2\nsecond body text here.", "plain prose page."]) == [
+        "https://e.example/a/0", "https://e.example/a/1", "https://e.example/a/2",
     ]
+    # One page holding three headed chapters: no URL recorded.
+    assert run(["Chapter 1\naaa body.\n\nChapter 2\nbbb body.\n\nChapter 3\nccc body."]) == [None, None, None]
