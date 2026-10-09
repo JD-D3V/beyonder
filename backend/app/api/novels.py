@@ -37,11 +37,13 @@ from ..storage.repository import (
     get_translation,
     insert_chapter,
     library_rows,
+    ranked_rows,
     term_dicts,
     untitled_translations,
     update_novel,
     update_term,
 )
+from .viewstats import today_utc, track_chapter_view
 from .schemas import (
     ChapterDetail,
     ChapterOut,
@@ -54,6 +56,7 @@ from .schemas import (
     GlossaryPatch,
     NovelOut,
     NovelPatch,
+    RankedNovelOut,
     TitlesTranslateResult,
 )
 
@@ -77,7 +80,7 @@ def _join_tags(tags: list[str] | None) -> str | None:
 
 
 def _novel_out(
-    novel: Novel, chapters: int, chars: int, translated: int
+    novel: Novel, chapters: int, chars: int, translated: int, views_total: int = 0
 ) -> NovelOut:
     return NovelOut(
         id=novel.id,
@@ -92,6 +95,7 @@ def _novel_out(
         chapter_count=chapters,
         char_count=chars,
         translated_count=translated,
+        views_total=views_total,
         updated_at=novel.updated_at.isoformat() if novel.updated_at else None,
     )
 
@@ -103,7 +107,7 @@ async def list_novels_route(
     status: str | None = Query(default=None, max_length=16),
     min_chapters: int | None = Query(default=None, ge=0),
     max_chapters: int | None = Query(default=None, ge=0),
-    sort: Literal["updated", "new", "chapters"] = "updated",
+    sort: Literal["updated", "new", "chapters", "views"] = "updated",
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> list[NovelOut]:
@@ -114,8 +118,30 @@ async def list_novels_route(
     )
     with get_session() as s:
         return [
-            _novel_out(r.novel, r.chapter_count, r.char_count, r.translated_count)
+            _novel_out(r.novel, r.chapter_count, r.char_count, r.translated_count,
+                r.views_total)
             for r in library_rows(s, params)
+        ]
+
+
+@router.get("/rankings", response_model=list[RankedNovelOut])
+async def rankings_route(
+    period: Literal["day", "week", "month", "all"] = "week",
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[RankedNovelOut]:
+    """Most-read novels in the window (UTC days); ties broken by id."""
+    with get_session() as s:
+        rows = ranked_rows(s, period, limit, today_utc())
+        return [
+            RankedNovelOut(
+                **_novel_out(
+                    r.novel, r.chapter_count, r.char_count, r.translated_count,
+                    r.views_total,
+                ).model_dump(),
+                views=views,
+                rank=i,
+            )
+            for i, (views, r) in enumerate(rows, start=1)
         ]
 
 
@@ -125,7 +151,8 @@ async def get_novel_route(novel_id: int) -> NovelOut:
         for r in library_rows(s):
             if r.novel.id == novel_id:
                 return _novel_out(
-                    r.novel, r.chapter_count, r.char_count, r.translated_count
+                    r.novel, r.chapter_count, r.char_count, r.translated_count,
+                    r.views_total,
                 )
     raise HTTPException(404, "novel not found")
 
@@ -207,6 +234,7 @@ async def list_chapters_route(
 async def get_chapter_route(
     novel_id: int,
     idx: int,
+    request: Request,
     target_lang: str = "en",
     user: User | None = Depends(current_user_optional),
 ) -> ChapterDetail:
@@ -220,6 +248,7 @@ async def get_chapter_route(
             raise HTTPException(404, "chapter not found")
         if user is not None:
             advance_progress(s, user.id, novel_id, idx)
+        track_chapter_view(s, request, user, novel_id)
         tr = get_translation(s, chapter_id=chap.id, target_lang=target_lang)
         return ChapterDetail(
             idx=chap.idx,

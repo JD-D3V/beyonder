@@ -5,6 +5,7 @@ Functions here take an open Session — they never open or commit their own.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Iterable, Sequence
 
 from sqlalchemy import Select, delete as sa_delete, func, select, update
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..common.config import settings
 from .models import (
-    Chapter, LibraryEntry, Novel, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+    Chapter, LibraryEntry, Novel, NovelDailyStat, ReadingProgress, Relation, ReviewFlag, Term, Translation,
 )
 
 
@@ -437,6 +438,7 @@ class LibraryRow:
     chapter_count: int
     char_count: int
     translated_count: int
+    views_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -448,7 +450,7 @@ class CatalogParams:
     status: str | None = None
     min_chapters: int | None = None
     max_chapters: int | None = None
-    sort: str = "updated"  # updated | new | chapters
+    sort: str = "updated"  # updated | new | chapters | views
     limit: int | None = None
     offset: int = 0
     ids: tuple[int, ...] | None = None  # restrict to these novels
@@ -486,16 +488,27 @@ def catalog_query(params: CatalogParams) -> Select:
         .group_by(Chapter.novel_id)
         .subquery()
     )
+    views = (
+        select(
+            NovelDailyStat.novel_id.label("novel_id"),
+            func.sum(NovelDailyStat.views).label("views"),
+        )
+        .group_by(NovelDailyStat.novel_id)
+        .subquery()
+    )
     n_chapters = func.coalesce(chap.c.chapters, 0)
+    n_views = func.coalesce(views.c.views, 0)
     stmt = (
         select(
             Novel,
             n_chapters,
             func.coalesce(chap.c.chars, 0),
             func.coalesce(trans.c.translated, 0),
+            n_views,
         )
         .outerjoin(chap, chap.c.novel_id == Novel.id)
         .outerjoin(trans, trans.c.novel_id == Novel.id)
+        .outerjoin(views, views.c.novel_id == Novel.id)
     )
     if params.q and params.q.strip():
         pat = f"%{_like_escape(params.q.strip())}%"
@@ -521,6 +534,8 @@ def catalog_query(params: CatalogParams) -> Select:
         primary = Novel.created_at.desc()
     elif params.sort == "chapters":
         primary = n_chapters.desc()
+    elif params.sort == "views":
+        primary = n_views.desc()
     else:
         primary = Novel.updated_at.desc()
     stmt = stmt.order_by(primary, Novel.id.desc())
@@ -538,8 +553,11 @@ def library_rows(
     """
     stmt = catalog_query(params or CatalogParams())
     return [
-        LibraryRow(novel=n, chapter_count=c, char_count=ch, translated_count=t)
-        for n, c, ch, t in session.execute(stmt).all()
+        LibraryRow(
+            novel=n, chapter_count=c, char_count=ch, translated_count=t,
+            views_total=int(v),
+        )
+        for n, c, ch, t, v in session.execute(stmt).all()
     ]
 
 
@@ -798,3 +816,55 @@ def load_variants(session: Session, novel_id: int) -> dict[str, list[str]]:
         if tgt not in out.setdefault(src, []):
             out[src].append(tgt)
     return out
+
+
+# --- View stats and rankings ----------------------------------------------
+
+RANK_WINDOW_DAYS = {"day": 1, "week": 7, "month": 30}
+
+
+def record_view(
+    session: Session, novel_id: int, day: date, *, new_reader: bool
+) -> None:
+    """Count one chapter view for ``day`` in a single upsert statement."""
+    r = 1 if new_reader else 0
+    ins = pg_insert(NovelDailyStat).values(
+        novel_id=novel_id, day=day, views=1, readers=r
+    )
+    session.execute(
+        ins.on_conflict_do_update(
+            index_elements=[NovelDailyStat.novel_id, NovelDailyStat.day],
+            set_={
+                "views": NovelDailyStat.views + 1,
+                "readers": NovelDailyStat.readers + r,
+            },
+        )
+    )
+
+
+def ranking_query(period: str, limit: int, today: date) -> Select:
+    """(novel_id, views) for the top novels in the window, ties by id."""
+    total = func.sum(NovelDailyStat.views).label("views")
+    stmt = select(NovelDailyStat.novel_id, total).group_by(NovelDailyStat.novel_id)
+    days = RANK_WINDOW_DAYS.get(period)
+    if days is not None:
+        stmt = stmt.where(NovelDailyStat.day > today - timedelta(days=days))
+    return (
+        stmt.having(total > 0)
+        .order_by(total.desc(), NovelDailyStat.novel_id.asc())
+        .limit(limit)
+    )
+
+
+def ranked_rows(
+    session: Session, period: str, limit: int, today: date
+) -> list[tuple[int, LibraryRow]]:
+    """(views in window, row) in rank order."""
+    top = session.execute(ranking_query(period, limit, today)).all()
+    if not top:
+        return []
+    by_id = {
+        r.novel.id: r
+        for r in library_rows(session, CatalogParams(ids=tuple(i for i, _ in top)))
+    }
+    return [(int(v), by_id[i]) for i, v in top if i in by_id]
