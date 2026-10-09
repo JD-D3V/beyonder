@@ -23,6 +23,8 @@ class NovelOut(BaseModel):
     translated_count: int = 0
     updated_at: Optional[str] = None
     views_total: int = 0
+    rating_avg: Optional[float] = None
+    rating_count: int = 0
 
 
 class RankedNovelOut(NovelOut):

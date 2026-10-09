@@ -25,6 +25,7 @@ async def get_library(user: User = Depends(current_user)) -> LibraryOut:
             base = _novel_out(
                 r.novel, r.chapter_count, r.char_count, r.translated_count,
                 r.views_total,
+                r.rating_avg, r.rating_count,
             )
             out[shelf].append(
                 LibraryItemOut(**base.model_dump(), current_chapter=current)

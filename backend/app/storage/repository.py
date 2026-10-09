@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..common.config import settings
 from .models import (
-    Chapter, LibraryEntry, Novel, NovelDailyStat, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+    Chapter, LibraryEntry, Novel, NovelDailyStat, Review, ReadingProgress, Relation, ReviewFlag, Term, Translation,
 )
 
 
@@ -439,6 +439,8 @@ class LibraryRow:
     char_count: int
     translated_count: int
     views_total: int = 0
+    rating_avg: float | None = None
+    rating_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -450,7 +452,7 @@ class CatalogParams:
     status: str | None = None
     min_chapters: int | None = None
     max_chapters: int | None = None
-    sort: str = "updated"  # updated | new | chapters | views
+    sort: str = "updated"  # updated | new | chapters | views | rating
     limit: int | None = None
     offset: int = 0
     ids: tuple[int, ...] | None = None  # restrict to these novels
@@ -496,6 +498,15 @@ def catalog_query(params: CatalogParams) -> Select:
         .group_by(NovelDailyStat.novel_id)
         .subquery()
     )
+    rate = (
+        select(
+            Review.novel_id.label("novel_id"),
+            func.avg(Review.rating).label("avg"),
+            func.count(Review.id).label("n"),
+        )
+        .group_by(Review.novel_id)
+        .subquery()
+    )
     n_chapters = func.coalesce(chap.c.chapters, 0)
     n_views = func.coalesce(views.c.views, 0)
     stmt = (
@@ -505,10 +516,13 @@ def catalog_query(params: CatalogParams) -> Select:
             func.coalesce(chap.c.chars, 0),
             func.coalesce(trans.c.translated, 0),
             n_views,
+            rate.c.avg,
+            func.coalesce(rate.c.n, 0),
         )
         .outerjoin(chap, chap.c.novel_id == Novel.id)
         .outerjoin(trans, trans.c.novel_id == Novel.id)
         .outerjoin(views, views.c.novel_id == Novel.id)
+        .outerjoin(rate, rate.c.novel_id == Novel.id)
     )
     if params.q and params.q.strip():
         pat = f"%{_like_escape(params.q.strip())}%"
@@ -536,6 +550,8 @@ def catalog_query(params: CatalogParams) -> Select:
         primary = n_chapters.desc()
     elif params.sort == "views":
         primary = n_views.desc()
+    elif params.sort == "rating":
+        primary = rate.c.avg.desc().nulls_last()
     else:
         primary = Novel.updated_at.desc()
     stmt = stmt.order_by(primary, Novel.id.desc())
@@ -556,8 +572,10 @@ def library_rows(
         LibraryRow(
             novel=n, chapter_count=c, char_count=ch, translated_count=t,
             views_total=int(v),
+            rating_avg=float(ra) if ra is not None else None,
+            rating_count=int(rc),
         )
-        for n, c, ch, t, v in session.execute(stmt).all()
+        for n, c, ch, t, v, ra, rc in session.execute(stmt).all()
     ]
 
 
