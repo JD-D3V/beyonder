@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..common.config import settings
 from .models import (
-    Chapter, LibraryEntry, Novel, NovelDailyStat, Review, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+    Chapter, LibraryEntry, Novel, NovelCover, NovelDailyStat, Review, ReadingProgress, Relation, ReviewFlag, Term, Translation,
 )
 
 
@@ -32,6 +32,45 @@ def create_novel(
 
 def get_novel(session: Session, novel_id: int) -> Novel | None:
     return session.get(Novel, novel_id)
+
+
+def cover_version(novel_id: int, updated_at) -> str:
+    """Opaque cache-busting token; also the ETag body."""
+    import hashlib
+
+    return hashlib.sha256(f"{novel_id}:{updated_at.isoformat()}".encode()).hexdigest()[:16]
+
+
+def set_cover(
+    session: Session, novel_id: int, *, data: bytes, width: int, height: int,
+    content_type: str = "image/webp",
+) -> NovelCover:
+    from datetime import datetime, timezone
+
+    row = session.get(NovelCover, novel_id)
+    now = datetime.now(timezone.utc)
+    if row is None:
+        row = NovelCover(novel_id=novel_id)
+        session.add(row)
+    row.data, row.width, row.height = data, width, height
+    row.content_type, row.updated_at = content_type, now
+    session.flush()
+    return row
+
+
+def get_cover(session: Session, novel_id: int) -> NovelCover | None:
+    return session.get(NovelCover, novel_id)
+
+
+def get_cover_updated_at(session: Session, novel_id: int):
+    return session.execute(
+        select(NovelCover.updated_at).where(NovelCover.novel_id == novel_id)
+    ).scalar_one_or_none()
+
+
+def delete_cover(session: Session, novel_id: int) -> bool:
+    res = session.execute(sa_delete(NovelCover).where(NovelCover.novel_id == novel_id))
+    return bool(res.rowcount)
 
 
 def list_novels(session: Session) -> Sequence[Novel]:

@@ -144,6 +144,41 @@ async def _fetch_http(url: str) -> str:
         raise UnsafeURL("too many redirects")
 
 
+class FetchTooLarge(ValueError):
+    """The remote body exceeded the caller's size cap."""
+
+
+async def fetch_bytes_guarded(url: str, max_bytes: int) -> bytes:
+    """SSRF-guarded GET returning the body, streamed and capped at ``max_bytes``.
+
+    Same checks as the page fetcher: every hop (including redirects) must
+    resolve to public addresses.
+    """
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=_TIMEOUT_MS / 1000,
+        headers={"user-agent": _USER_AGENT},
+    ) as client:
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            await assert_public_url(current)
+            async with client.stream("GET", current) as resp:
+                if resp.is_redirect and resp.headers.get("location"):
+                    current = urljoin(current, resp.headers["location"])
+                    continue
+                resp.raise_for_status()
+                declared = resp.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise FetchTooLarge("response too large")
+                buf = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise FetchTooLarge("response too large")
+                return bytes(buf)
+        raise UnsafeURL("too many redirects")
+
+
 async def _fetch_playwright(url: str) -> str:
     from playwright.async_api import async_playwright  # imported lazily
 

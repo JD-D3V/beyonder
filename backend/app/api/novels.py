@@ -8,17 +8,18 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile,
+    APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile,
 )
 
 from ..agents.translator import translate_title, translate_titles_batch
 from ..auth.deps import current_user, current_user_optional, require_admin
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
-from ..ingest.epub_loader import load_epub
+from ..ingest.covers import CoverError, MAX_UPLOAD_BYTES as MAX_COVER_BYTES, process_cover
+from ..ingest.epub_loader import load_epub_with_cover
 from ..ingest.lang import detect_lang
 from ..ingest.pdf_loader import load_pdf
-from ..ingest.scraper import UnsafeURL, scrape_many
+from ..ingest.scraper import FetchTooLarge, UnsafeURL, fetch_bytes_guarded, scrape_many
 from ..ingest.splitter import split_chapters
 from ..ingest.txt_loader import load_txt
 from ..llm.resolve import resolve_llm
@@ -28,8 +29,12 @@ from ..storage.repository import (
     CatalogParams,
     advance_progress,
     chapter_rows,
+    cover_version,
     create_novel,
+    delete_cover,
     delete_novel,
+    get_cover,
+    get_cover_updated_at,
     get_chapter_by_idx,
     get_chapters,
     get_novel,
@@ -38,6 +43,7 @@ from ..storage.repository import (
     insert_chapter,
     library_rows,
     ranked_rows,
+    set_cover,
     term_dicts,
     untitled_translations,
     update_novel,
@@ -47,6 +53,7 @@ from .viewstats import today_utc, track_chapter_view
 from .schemas import (
     ChapterDetail,
     ChapterOut,
+    CoverUrlIn,
     EmbedIn,
     EmbedResult,
     IngestResult,
@@ -83,6 +90,7 @@ def _novel_out(
     novel: Novel, chapters: int, chars: int, translated: int, views_total: int = 0,
     rating_avg: float | None = None, rating_count: int = 0,
 ) -> NovelOut:
+    cover_at = getattr(novel, "cover_updated_at", None)
     return NovelOut(
         id=novel.id,
         title=novel.title,
@@ -100,6 +108,8 @@ def _novel_out(
         updated_at=novel.updated_at.isoformat() if novel.updated_at else None,
         rating_avg=round(rating_avg, 2) if rating_avg is not None else None,
         rating_count=rating_count,
+        has_cover=cover_at is not None,
+        cover_version=cover_version(novel.id, cover_at) if cover_at else None,
     )
 
 
@@ -213,6 +223,94 @@ async def delete_novel_route(
             raise HTTPException(404, "novel not found")
     log.info("novel.deleted", novel_id=novel_id)
     return {"ok": True, "deleted": novel_id}
+
+
+@router.get("/novels/{novel_id}/cover")
+async def get_cover_route(novel_id: int, request: Request) -> Response:
+    """The cover as WebP. Cacheable for a day; revalidates by ETag."""
+    with get_session() as s:
+        at = get_cover_updated_at(s, novel_id)
+        if at is None:
+            raise HTTPException(404, "no cover")
+        etag = f'"{cover_version(novel_id, at)}"'
+        headers = {"Cache-Control": "public, max-age=86400", "ETag": etag}
+        sent = [t.strip().removeprefix("W/") for t in
+                request.headers.get("if-none-match", "").split(",")]
+        if etag in sent or "*" in sent:
+            return Response(status_code=304, headers=headers)
+        row = get_cover(s, novel_id)
+        if row is None:
+            raise HTTPException(404, "no cover")
+        return Response(content=row.data, media_type=row.content_type, headers=headers)
+
+
+async def _store_cover(novel_id: int, raw: bytes) -> None:
+    try:
+        cover = await process_cover(raw)
+    except CoverError as e:
+        raise HTTPException(400, str(e)) from e
+    with get_session() as s:
+        if get_novel(s, novel_id) is None:
+            raise HTTPException(404, "novel not found")
+        set_cover(
+            s, novel_id, data=cover.data, width=cover.width,
+            height=cover.height, content_type=cover.content_type,
+        )
+
+
+@router.put("/novels/{novel_id}/cover", response_model=NovelOut)
+async def put_cover_route(
+    novel_id: int, request: Request, _admin: User = Depends(require_admin)
+) -> NovelOut:
+    """Set the cover from a multipart ``file`` or a JSON ``{"url": ...}``."""
+    with get_session() as s:
+        if get_novel(s, novel_id) is None:
+            raise HTTPException(404, "novel not found")
+    ctype = request.headers.get("content-type", "").lower()
+    if ctype.startswith("application/json"):
+        try:
+            body = CoverUrlIn.model_validate(await request.json())
+        except Exception as e:
+            raise HTTPException(422, "expected JSON body {\"url\": ...}") from e
+        try:
+            raw = await fetch_bytes_guarded(body.url, MAX_COVER_BYTES)
+        except UnsafeURL as e:
+            log.warning("cover_url.unsafe_url", reason=str(e))
+            raise HTTPException(
+                400,
+                detail={
+                    "code": "unsafe_url",
+                    "detail": "This URL can't be fetched (only public http/https addresses are allowed).",
+                },
+            )
+        except FetchTooLarge:
+            raise HTTPException(413, "image is larger than 5 MB")
+        except Exception as e:
+            log.warning("cover_url.fetch_fail", err=str(e))
+            raise HTTPException(400, "could not fetch the image") from e
+    else:
+        clen = request.headers.get("content-length", "")
+        if clen.isdigit() and int(clen) > MAX_COVER_BYTES + 64 * 1024:
+            raise HTTPException(413, "image is larger than 5 MB")
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(422, "missing file")
+        raw = await upload.read(MAX_COVER_BYTES + 1)
+        if len(raw) > MAX_COVER_BYTES:
+            raise HTTPException(413, "image is larger than 5 MB")
+    await _store_cover(novel_id, raw)
+    return await get_novel_route(novel_id)
+
+
+@router.delete("/novels/{novel_id}/cover")
+async def delete_cover_route(
+    novel_id: int, _admin: User = Depends(require_admin)
+) -> dict:
+    with get_session() as s:
+        if not delete_cover(s, novel_id):
+            raise HTTPException(404, "no cover")
+    return {"ok": True}
 
 
 @router.get("/novels/{novel_id}/chapters", response_model=list[ChapterOut])
@@ -420,6 +518,7 @@ async def upload_novel(
         )
 
     tmp_path: str | None = None
+    cover_raw: bytes | None = None
     try:
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=suffix
@@ -427,7 +526,7 @@ async def upload_novel(
             tmp.write(raw)
             tmp_path = tmp.name
         if suffix in _EPUB_SUFFIXES:
-            loader = load_epub
+            loader = load_epub_with_cover
         elif suffix in _PDF_SUFFIXES:
             loader = load_pdf
         else:
@@ -435,6 +534,8 @@ async def upload_novel(
         try:
             # Parsing a big PDF/EPUB is CPU-bound; keep it off the event loop.
             text = await asyncio.to_thread(loader, tmp_path)
+            if isinstance(text, tuple):
+                text, cover_raw = text
         except Exception as e:  # malformed archive, unreadable encoding, ...
             log.warning("upload.parse_fail", name=name, err=str(e))
             raise HTTPException(400, f"could not read {name}: {e}") from e
@@ -445,7 +546,7 @@ async def upload_novel(
     if not text.strip():
         raise HTTPException(400, f"no text found in {name}")
 
-    return _persist_novel(
+    result = _persist_novel(
         title=(title or Path(name).stem).strip()[:512],
         text=text,
         source_lang=source_lang,
@@ -453,6 +554,13 @@ async def upload_novel(
         description=description,
         tags=[t for t in (tags or "").split(",") if t.strip()],
     )
+    if cover_raw:
+        # Best effort: a bad embedded image must never fail the import.
+        try:
+            await _store_cover(result.novel_id, cover_raw)
+        except HTTPException as e:
+            log.info("upload.cover_skipped", novel_id=result.novel_id, why=e.detail)
+    return result
 
 
 @router.post("/novels/ingest/url", response_model=IngestResult)

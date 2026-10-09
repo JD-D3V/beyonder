@@ -37,6 +37,7 @@ ebooklib==0.18
 langdetect==1.0.9
 chardet==5.2.0
 pypdf==6.19.0
+pillow==12.3.0
 
 # Tokenization + chunking
 tiktoken==0.8.0

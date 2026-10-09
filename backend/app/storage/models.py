@@ -31,13 +31,15 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     false,
     func,
+    select,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, mapped_column, relationship
 
 from ..common.config import settings
 
@@ -364,3 +366,30 @@ class ContentReport(Base):
     resolved: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+
+
+class NovelCover(Base):
+    """One normalised WebP cover per novel, kept in Postgres."""
+
+    __tablename__ = "novel_covers"
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    content_type: Mapped[str] = mapped_column(String(64), default="image/webp")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# Cheap per-row cover marker (no blob load) so catalog queries can report
+# has_cover / cover_version without a second round trip.
+Novel.cover_updated_at = column_property(
+    select(NovelCover.updated_at)
+    .where(NovelCover.novel_id == Novel.id)
+    .correlate_except(NovelCover)
+    .scalar_subquery()
+)

@@ -25,6 +25,8 @@ class NovelOut(BaseModel):
     views_total: int = 0
     rating_avg: Optional[float] = None
     rating_count: int = 0
+    has_cover: bool = False
+    cover_version: Optional[str] = None
 
 
 class RankedNovelOut(NovelOut):
@@ -32,6 +34,10 @@ class RankedNovelOut(NovelOut):
 
     views: int = 0
     rank: int = 0
+
+
+class CoverUrlIn(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class LibraryItemOut(NovelOut):
