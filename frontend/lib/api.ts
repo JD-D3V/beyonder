@@ -108,7 +108,7 @@ async function check(res: Response, signedIn: boolean): Promise<void> {
   throw new ApiError(msg, res.status, errorCode(body));
 }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+export async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const auth = authHeaders();
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
