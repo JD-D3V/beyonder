@@ -34,7 +34,7 @@ frontend: env
 	$(COMPOSE) --profile frontend up frontend-dev
 
 frontend-build: env
-	$(COMPOSE) --profile build run --rm frontend-build
+	$(COMPOSE) --profile build run --rm --build frontend-build
 	@echo "Static export written to frontend/out/"
 
 test: venv
