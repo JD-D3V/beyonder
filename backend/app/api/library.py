@@ -23,7 +23,8 @@ async def get_library(user: User = Depends(current_user)) -> LibraryOut:
             if shelf not in out:
                 continue
             base = _novel_out(
-                r.novel, r.chapter_count, r.char_count, r.translated_count
+                r.novel, r.chapter_count, r.char_count, r.translated_count,
+                r.rating_avg, r.rating_count,
             )
             out[shelf].append(
                 LibraryItemOut(**base.model_dump(), current_chapter=current)

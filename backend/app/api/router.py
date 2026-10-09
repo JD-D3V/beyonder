@@ -11,6 +11,7 @@ from ..common.config import settings
 from .library import router as library_router
 from .novels import router as novels_router
 from .reader import router as reader_router
+from .social import router as social_router
 from .translate import router as translate_router
 
 router = APIRouter()
@@ -18,6 +19,7 @@ router.include_router(novels_router)
 router.include_router(translate_router)
 router.include_router(reader_router)
 router.include_router(library_router)
+router.include_router(social_router)
 
 
 

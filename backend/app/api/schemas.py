@@ -22,6 +22,8 @@ class NovelOut(BaseModel):
     char_count: int = 0
     translated_count: int = 0
     updated_at: Optional[str] = None
+    rating_avg: Optional[float] = None
+    rating_count: int = 0
 
 
 class LibraryItemOut(NovelOut):

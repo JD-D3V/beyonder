@@ -24,6 +24,7 @@ from typing import Optional
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -277,4 +278,75 @@ class ReviewFlag(Base):
     )
     resolved_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class Review(Base):
+    """One star rating (and optional text) per user per novel."""
+
+    __tablename__ = "reviews"
+    __table_args__ = (
+        UniqueConstraint("novel_id", "user_id", name="uq_review_novel_user"),
+        CheckConstraint("rating BETWEEN 1 AND 5", name="ck_review_rating"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    rating: Mapped[int] = mapped_column(Integer)
+    body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Comment(Base):
+    """A chapter comment; replies are one level deep (parent_id of a top-level)."""
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        Index("ix_comments_novel_chapter_created", "novel_id", "chapter_idx", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("comments.id", ondelete="CASCADE"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    deleted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+
+
+class ContentReport(Base):
+    """A user's report of a review or comment, for admin triage."""
+
+    __tablename__ = "content_reports"
+    __table_args__ = (
+        UniqueConstraint("kind", "target_id", "reporter_id", name="uq_report_once"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # review | comment
+    target_id: Mapped[int] = mapped_column(Integer)
+    reporter_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
     )

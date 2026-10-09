@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..common.config import settings
 from .models import (
-    Chapter, LibraryEntry, Novel, ReadingProgress, Relation, ReviewFlag, Term, Translation,
+    Chapter, LibraryEntry, Novel, Review, ReadingProgress, Relation, ReviewFlag, Term, Translation,
 )
 
 
@@ -437,6 +437,8 @@ class LibraryRow:
     chapter_count: int
     char_count: int
     translated_count: int
+    rating_avg: float | None = None
+    rating_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -448,7 +450,7 @@ class CatalogParams:
     status: str | None = None
     min_chapters: int | None = None
     max_chapters: int | None = None
-    sort: str = "updated"  # updated | new | chapters
+    sort: str = "updated"  # updated | new | chapters | rating
     limit: int | None = None
     offset: int = 0
     ids: tuple[int, ...] | None = None  # restrict to these novels
@@ -486,6 +488,15 @@ def catalog_query(params: CatalogParams) -> Select:
         .group_by(Chapter.novel_id)
         .subquery()
     )
+    rate = (
+        select(
+            Review.novel_id.label("novel_id"),
+            func.avg(Review.rating).label("avg"),
+            func.count(Review.id).label("n"),
+        )
+        .group_by(Review.novel_id)
+        .subquery()
+    )
     n_chapters = func.coalesce(chap.c.chapters, 0)
     stmt = (
         select(
@@ -493,9 +504,12 @@ def catalog_query(params: CatalogParams) -> Select:
             n_chapters,
             func.coalesce(chap.c.chars, 0),
             func.coalesce(trans.c.translated, 0),
+            rate.c.avg,
+            func.coalesce(rate.c.n, 0),
         )
         .outerjoin(chap, chap.c.novel_id == Novel.id)
         .outerjoin(trans, trans.c.novel_id == Novel.id)
+        .outerjoin(rate, rate.c.novel_id == Novel.id)
     )
     if params.q and params.q.strip():
         pat = f"%{_like_escape(params.q.strip())}%"
@@ -521,6 +535,8 @@ def catalog_query(params: CatalogParams) -> Select:
         primary = Novel.created_at.desc()
     elif params.sort == "chapters":
         primary = n_chapters.desc()
+    elif params.sort == "rating":
+        primary = rate.c.avg.desc().nulls_last()
     else:
         primary = Novel.updated_at.desc()
     stmt = stmt.order_by(primary, Novel.id.desc())
@@ -538,8 +554,12 @@ def library_rows(
     """
     stmt = catalog_query(params or CatalogParams())
     return [
-        LibraryRow(novel=n, chapter_count=c, char_count=ch, translated_count=t)
-        for n, c, ch, t in session.execute(stmt).all()
+        LibraryRow(
+            novel=n, chapter_count=c, char_count=ch, translated_count=t,
+            rating_avg=float(ra) if ra is not None else None,
+            rating_count=int(rc),
+        )
+        for n, c, ch, t, ra, rc in session.execute(stmt).all()
     ]
 
 

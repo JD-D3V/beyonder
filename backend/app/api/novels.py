@@ -77,7 +77,8 @@ def _join_tags(tags: list[str] | None) -> str | None:
 
 
 def _novel_out(
-    novel: Novel, chapters: int, chars: int, translated: int
+    novel: Novel, chapters: int, chars: int, translated: int,
+    rating_avg: float | None = None, rating_count: int = 0,
 ) -> NovelOut:
     return NovelOut(
         id=novel.id,
@@ -93,6 +94,8 @@ def _novel_out(
         char_count=chars,
         translated_count=translated,
         updated_at=novel.updated_at.isoformat() if novel.updated_at else None,
+        rating_avg=round(rating_avg, 2) if rating_avg is not None else None,
+        rating_count=rating_count,
     )
 
 
@@ -103,7 +106,7 @@ async def list_novels_route(
     status: str | None = Query(default=None, max_length=16),
     min_chapters: int | None = Query(default=None, ge=0),
     max_chapters: int | None = Query(default=None, ge=0),
-    sort: Literal["updated", "new", "chapters"] = "updated",
+    sort: Literal["updated", "new", "chapters", "rating"] = "updated",
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> list[NovelOut]:
@@ -114,7 +117,10 @@ async def list_novels_route(
     )
     with get_session() as s:
         return [
-            _novel_out(r.novel, r.chapter_count, r.char_count, r.translated_count)
+            _novel_out(
+                r.novel, r.chapter_count, r.char_count, r.translated_count,
+                r.rating_avg, r.rating_count,
+            )
             for r in library_rows(s, params)
         ]
 
@@ -125,7 +131,8 @@ async def get_novel_route(novel_id: int) -> NovelOut:
         for r in library_rows(s):
             if r.novel.id == novel_id:
                 return _novel_out(
-                    r.novel, r.chapter_count, r.char_count, r.translated_count
+                    r.novel, r.chapter_count, r.char_count, r.translated_count,
+                    r.rating_avg, r.rating_count,
                 )
     raise HTTPException(404, "novel not found")
 
