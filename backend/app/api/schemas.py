@@ -22,6 +22,12 @@ class NovelOut(BaseModel):
     char_count: int = 0
     translated_count: int = 0
     updated_at: Optional[str] = None
+    has_cover: bool = False
+    cover_version: Optional[str] = None
+
+
+class CoverUrlIn(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class LibraryItemOut(NovelOut):
