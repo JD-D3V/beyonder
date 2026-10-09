@@ -481,3 +481,38 @@ nav.topnav .theme-toggle button { display: inline-flex; align-items: center; gap
 .admin-list li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .report-item { justify-content: space-between; align-items: flex-start !important; }
 .report-text { white-space: pre-wrap; margin-top: 4px; max-width: 60ch; }
+
+/* --- nav: primary links + More menu ------------------------------------- */
+nav.topnav { position: relative; flex-wrap: nowrap; }
+nav.topnav .brand { white-space: nowrap; }
+nav.topnav .links { flex-wrap: nowrap; gap: 0; }
+nav.topnav .links a { white-space: nowrap; }
+nav.topnav .more { position: relative; flex-shrink: 0; }
+nav.topnav .more-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; }
+nav.topnav .more-toggle .more-burger { display: none; }
+nav.topnav .more-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 50;
+  min-width: 210px; display: flex; flex-direction: column; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+nav.topnav .more-menu a,
+nav.topnav .more-menu .more-item {
+  display: flex; align-items: center; gap: 8px; padding: 9px 10px; margin: 0;
+  color: var(--muted); border-radius: 6px; text-align: left; font: inherit;
+  background: none; border: 0; cursor: pointer; width: 100%;
+}
+nav.topnav .more-menu a:hover,
+nav.topnav .more-menu .more-item:hover { background: var(--panel-2); color: var(--fg); }
+nav.topnav .more-menu a.active { color: var(--fg); }
+nav.topnav .more-menu hr { border: 0; border-top: 1px solid var(--border); margin: 6px 0; width: 100%; }
+nav.topnav .more-menu .more-email { padding: 4px 10px; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  nav.topnav { padding: 10px 12px; gap: 10px; }
+  nav.topnav .brand { font-size: 14px; letter-spacing: 0; }
+  nav.topnav .links { flex: 1; min-width: 0; justify-content: space-between; font-size: 13px; }
+  nav.topnav .links a { margin-right: 0; }
+  nav.topnav .more-toggle { padding: 6px 8px; }
+  nav.topnav .more-toggle .more-burger { display: block; }
+  nav.topnav .more-toggle .more-label { display: none; }
+}
