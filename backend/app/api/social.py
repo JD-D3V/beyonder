@@ -35,8 +35,9 @@ def _too_many(what: str) -> HTTPException:
     )
 
 
-def _display_name(email: str | None) -> str:
-    return (email or "").split("@", 1)[0] or "reader"
+def _display_name(name: str | None, user_id: int) -> str:
+    """The user's chosen public name; never any part of the email."""
+    return name or f"reader-{user_id}"
 
 
 def _iso(dt) -> Optional[str]:
@@ -125,9 +126,9 @@ def _require_novel(s, novel_id: int) -> None:
         raise HTTPException(404, "novel not found")
 
 
-def _review_out(r: Review, email: str) -> ReviewOut:
+def _review_out(r: Review, name: str | None) -> ReviewOut:
     return ReviewOut(
-        id=r.id, user_id=r.user_id, author=_display_name(email), rating=r.rating,
+        id=r.id, user_id=r.user_id, author=_display_name(name, r.user_id), rating=r.rating,
         body=r.body, created_at=_iso(r.created_at), updated_at=_iso(r.updated_at),
     )
 
@@ -141,14 +142,14 @@ async def list_reviews(
     with get_session() as s:
         _require_novel(s, novel_id)
         rows = s.execute(
-            select(Review, User.email)
+            select(Review, User.display_name)
             .join(User, User.id == Review.user_id)
             .where(Review.novel_id == novel_id)
             .order_by(Review.created_at.desc(), Review.id.desc())
             .limit(limit)
             .offset(offset)
         ).all()
-        return [_review_out(r, email) for r, email in rows]
+        return [_review_out(r, name) for r, name in rows]
 
 
 @router.get("/novels/{novel_id}/rating", response_model=RatingOut)
@@ -197,7 +198,7 @@ async def put_review(
                 Review.novel_id == novel_id, Review.user_id == user.id
             )
         ).scalar_one()
-        return _review_out(r, user.email)
+        return _review_out(r, getattr(user, 'display_name', None))
 
 
 @router.delete("/novels/{novel_id}/review", status_code=204)
@@ -236,7 +237,7 @@ def _require_chapter(s, novel_id: int, idx: int) -> None:
         raise HTTPException(404, "chapter not found")
 
 
-def _comment_out(c: Comment, email: str | None) -> CommentOut:
+def _comment_out(c: Comment, name: str | None) -> CommentOut:
     if c.deleted:
         return CommentOut(
             id=c.id, chapter_idx=c.chapter_idx, parent_id=c.parent_id,
@@ -244,7 +245,7 @@ def _comment_out(c: Comment, email: str | None) -> CommentOut:
         )
     return CommentOut(
         id=c.id, chapter_idx=c.chapter_idx, parent_id=c.parent_id,
-        user_id=c.user_id, author=_display_name(email), body=c.body,
+        user_id=c.user_id, author=_display_name(name, c.user_id), body=c.body,
         created_at=_iso(c.created_at),
     )
 
@@ -256,24 +257,24 @@ async def list_comments(novel_id: int, idx: int) -> list[CommentOut]:
     with get_session() as s:
         _require_chapter(s, novel_id, idx)
         rows = s.execute(
-            select(Comment, User.email)
+            select(Comment, User.display_name)
             .join(User, User.id == Comment.user_id)
             .where(Comment.novel_id == novel_id, Comment.chapter_idx == idx)
             .order_by(Comment.created_at, Comment.id)
         ).all()
     replies: dict[int, list[CommentOut]] = {}
     tops: list[tuple[Comment, str]] = []
-    for c, email in rows:
+    for c, name in rows:
         if c.parent_id is None:
-            tops.append((c, email))
+            tops.append((c, name))
         elif not c.deleted:
-            replies.setdefault(c.parent_id, []).append(_comment_out(c, email))
+            replies.setdefault(c.parent_id, []).append(_comment_out(c, name))
     out: list[CommentOut] = []
-    for c, email in reversed(tops):  # newest first
+    for c, name in reversed(tops):  # newest first
         kids = replies.get(c.id, [])
         if c.deleted and not kids:
             continue
-        node = _comment_out(c, email)
+        node = _comment_out(c, name)
         node.replies = kids  # oldest first (query order)
         out.append(node)
     return out
@@ -309,7 +310,7 @@ async def post_comment(
         s.add(c)
         s.flush()
         s.refresh(c)
-        return _comment_out(c, user.email)
+        return _comment_out(c, getattr(user, 'display_name', None))
 
 
 @router.delete("/comments/{comment_id}", status_code=204)
@@ -354,7 +355,7 @@ async def list_reports(
 ) -> list[ReportOut]:
     with get_session() as s:
         rows = s.execute(
-            select(ContentReport, User.email)
+            select(ContentReport, User.display_name)
             .join(User, User.id == ContentReport.reporter_id)
             .where(ContentReport.resolved.is_(resolved))
             .order_by(ContentReport.created_at.desc(), ContentReport.id.desc())
@@ -362,18 +363,20 @@ async def list_reports(
             .offset(offset)
         ).all()
         out: list[ReportOut] = []
-        for rep, email in rows:
+        for rep, rname in rows:
             model = Review if rep.kind == "review" else Comment
             target = s.get(model, rep.target_id)
             t_body = t_author = None
             if target is not None:
                 t_body = target.body
                 author = s.get(User, target.user_id)
-                t_author = _display_name(author.email) if author else None
+                t_author = (
+                    _display_name(author.display_name, author.id) if author else None
+                )
             out.append(
                 ReportOut(
                     id=rep.id, kind=rep.kind, target_id=rep.target_id,
-                    reporter_id=rep.reporter_id, reporter=_display_name(email),
+                    reporter_id=rep.reporter_id, reporter=_display_name(rname, rep.reporter_id),
                     reason=rep.reason, created_at=_iso(rep.created_at),
                     resolved=rep.resolved, target_body=t_body,
                     target_author=t_author,

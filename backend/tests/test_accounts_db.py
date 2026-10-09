@@ -105,3 +105,63 @@ def test_email_case_insensitive_login(client, db_session):
     )
     assert bad_pw.status_code == unknown.status_code == 401
     assert bad_pw.json() == unknown.json()
+
+
+def _hdr(tok):
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def test_display_name_signup_patch_and_social(client, db_session):
+    from app.storage.models import Novel
+
+    tok = _admin_token(client, db_session)
+    r = client.post(
+        "/auth/signup",
+        json={"email": "carol@example.com", "password": "password-1",
+              "invite": _invite(client, tok), "display_name": "Carol_9"},
+    )
+    assert r.status_code == 200 and r.json()["user"]["display_name"] == "Carol_9"
+    ctok = r.json()["token"]
+
+    # duplicate (case-insensitive) at signup, and invalid names
+    dup = client.post(
+        "/auth/signup",
+        json={"email": "dave@example.com", "password": "password-1",
+              "invite": _invite(client, tok), "display_name": "carol_9"},
+    )
+    assert dup.status_code == 409
+    for bad in ("ab", "x" * 25, "has space", "a@b.c", "reader-7"):
+        assert client.patch(
+            "/auth/me", json={"display_name": bad}, headers=_hdr(ctok)
+        ).status_code == 422
+
+    # signed out
+    assert client.patch("/auth/me", json={"display_name": "zed"}).status_code == 401
+
+    # second user without a name: PATCH conflict then success
+    r2 = client.post(
+        "/auth/signup",
+        json={"email": "erin@example.com", "password": "password-1",
+              "invite": _invite(client, tok)},
+    )
+    assert r2.json()["user"]["display_name"] is None
+    etok, eid = r2.json()["token"], r2.json()["user"]["id"]
+    assert client.patch(
+        "/auth/me", json={"display_name": "CAROL_9"}, headers=_hdr(etok)
+    ).status_code == 409
+    ok = client.patch("/auth/me", json={"display_name": "erin-r"}, headers=_hdr(etok))
+    assert ok.status_code == 200 and ok.json()["display_name"] == "erin-r"
+    assert client.get("/auth/me", headers=_hdr(etok)).json()["display_name"] == "erin-r"
+
+    # social routes: chosen name, else reader-<id>; never the email
+    n = Novel(title="n", source_lang="zh")
+    db_session.add(n)
+    db_session.commit()
+    client.put(f"/novels/{n.id}/review", json={"rating": 4}, headers=_hdr(ctok))
+    client.put(f"/novels/{n.id}/review", json={"rating": 5}, headers=_hdr(etok))
+    assert client.patch(
+        "/auth/me", json={"display_name": None}, headers=_hdr(etok)
+    ).json()["display_name"] is None
+    authors = {x["author"] for x in client.get(f"/novels/{n.id}/reviews").json()}
+    assert authors == {"Carol_9", f"reader-{eid}"}
+    assert "example.com" not in str(client.get(f"/novels/{n.id}/reviews").json())

@@ -44,7 +44,7 @@ admin: env venv
 	cd backend && .venv/bin/python -m app.scripts.create_admin
 
 reembed: env venv
-	cd backend && .venv/bin/python -m app.scripts.reembed
+	cd backend && .venv/bin/python -m app.scripts.reembed $(ARGS)
 
 # Fold "Title", "Title (2)", ... chapter runs into one chapter.
 # make merge-parts ARGS="--dry-run" (or ARGS="--novel 3")

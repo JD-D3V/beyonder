@@ -48,7 +48,7 @@ def test_rankings_route_shape(client, monkeypatch):
     def fake(s, period, limit, today):
         seen.update(period=period, limit=limit)
         return [
-            (50, LibraryRow(_novel(4), 3, 9, 1, views_total=80)),
+            (50, LibraryRow(_novel(4), 3, 9, 1, views_total=80, rating_avg=4.256, rating_count=3)),
             (7, LibraryRow(_novel(2), 1, 1, 0, views_total=7)),
         ]
 
@@ -60,6 +60,7 @@ def test_rankings_route_shape(client, monkeypatch):
     assert [(b["id"], b["rank"], b["views"], b["views_total"]) for b in body] == [
         (4, 1, 50, 80), (2, 2, 7, 7),
     ]
+    assert (body[0]["rating_avg"], body[0]["rating_count"]) == (4.26, 3)
 
 
 def test_rankings_validates_params(client):
@@ -130,7 +131,7 @@ def test_upsert_counter(db_session):
     db_session.flush()
     row = db_session.get(NovelDailyStat, (n.id, TODAY))
     db_session.refresh(row)
-    assert (row.views, row.readers) == (3, 2)
+    assert (row.views, row.readers) == (2, 2)
 
 
 @pytest.mark.db
@@ -161,3 +162,24 @@ def test_ranking_windows_and_totals(db_session):
     assert totals == {a: 7, b: 100, c: 2}
     by_views = library_rows(db_session, CatalogParams(sort="views"))
     assert [r.novel.id for r in by_views] == [b, a, c]
+
+
+@pytest.mark.db
+def test_repeated_gets_count_one_view(db_session):
+    from app.api import viewstats
+    from app.storage.models import Novel, NovelDailyStat
+
+    n = Novel(title="n", source_lang="zh")
+    db_session.add(n)
+    db_session.flush()
+    viewstats._dedupe.clear()
+    req = SimpleNamespace(headers={}, client=SimpleNamespace(host="198.51.100.7"))
+    for _ in range(4):
+        track_chapter_view(db_session, req, None, n.id)  # chapters 0..3 alike
+    other = SimpleNamespace(headers={}, client=SimpleNamespace(host="198.51.100.8"))
+    track_chapter_view(db_session, other, None, n.id)
+    db_session.flush()
+    row = db_session.get(NovelDailyStat, (n.id, viewstats.today_utc()))
+    db_session.refresh(row)
+    assert (row.views, row.readers) == (2, 2)
+    viewstats._dedupe.clear()

@@ -888,16 +888,17 @@ RANK_WINDOW_DAYS = {"day": 1, "week": 7, "month": 30}
 def record_view(
     session: Session, novel_id: int, day: date, *, new_reader: bool
 ) -> None:
-    """Count one chapter view for ``day`` in a single upsert statement."""
+    """Count a view for ``day`` in a single upsert statement. ``views`` and
+    ``readers`` both move only for the first view per viewer per novel per day."""
     r = 1 if new_reader else 0
     ins = pg_insert(NovelDailyStat).values(
-        novel_id=novel_id, day=day, views=1, readers=r
+        novel_id=novel_id, day=day, views=r, readers=r
     )
     session.execute(
         ins.on_conflict_do_update(
             index_elements=[NovelDailyStat.novel_id, NovelDailyStat.day],
             set_={
-                "views": NovelDailyStat.views + 1,
+                "views": NovelDailyStat.views + r,
                 "readers": NovelDailyStat.readers + r,
             },
         )

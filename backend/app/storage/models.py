@@ -197,6 +197,10 @@ class User(Base):
     # Always stored lowercased and stripped (done in code, not the database).
     email: Mapped[str] = mapped_column(String(320), unique=True)
     password_hash: Mapped[str] = mapped_column(String(256))
+    # Public name shown on reviews and comments; never derived from the email.
+    display_name: Mapped[Optional[str]] = mapped_column(
+        String(24), unique=True, nullable=True
+    )
     is_admin: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )

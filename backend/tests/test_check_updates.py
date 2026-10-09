@@ -68,9 +68,9 @@ def test_check_updates_appends_only_new(admin_client, db_session, monkeypatch):
 
     scraped = []
 
-    async def fake_scrape(urls, concurrency=3):
-        scraped.extend(urls)
-        return [ScrapedPage(url=u, title="T3", text="new text") for u in urls]
+    async def fake_scrape(u):
+        scraped.append(u)
+        return ScrapedPage(url=u, title="T3", text="new text")
 
     embedded = []
 
@@ -79,11 +79,11 @@ def test_check_updates_appends_only_new(admin_client, db_session, monkeypatch):
         return len(chaps)
 
     monkeypatch.setattr(updates, "fetch_html", fake_html)
-    monkeypatch.setattr(updates, "scrape_many", fake_scrape)
+    monkeypatch.setattr(updates, "scrape_url", fake_scrape)
     monkeypatch.setattr(updates, "embed_chapters", fake_embed)
 
     r = admin_client.post(f"/novels/{nid}/check-updates")
-    assert r.status_code == 200 and r.json() == {"added": 1}
+    assert r.status_code == 200 and r.json() == {"added": 1, "embedded": True, "hint": None}
     assert scraped == ["https://novels.example/book/1/c3.html"]
     assert embedded == [2]
 
@@ -95,7 +95,7 @@ def test_check_updates_appends_only_new(admin_client, db_session, monkeypatch):
     assert rows[2][1].endswith("/c3.html")
 
     # Second run finds nothing new.
-    assert admin_client.post(f"/novels/{nid}/check-updates").json() == {"added": 0}
+    assert admin_client.post(f"/novels/{nid}/check-updates").json()["added"] == 0
 
 
 @pytest.mark.db
@@ -120,3 +120,78 @@ def test_check_updates_errors(admin_client, db_session, monkeypatch):
     monkeypatch.setattr(updates, "fetch_html", boom)
     r = admin_client.post(f"/novels/{n.id}/check-updates")
     assert r.status_code == 400 and r.json()["detail"]["code"] == "unsafe_url"
+
+
+def test_discover_requires_prefix_and_same_depth():
+    html = (
+        '<a href="/book/1/c2.html">ok</a>'
+        '<a href="/book/1/extra/c3.html">deeper</a>'
+        '<a href="/book/2/c4.html">sibling book</a>'
+        '<a href="/book/1/">dir</a>'
+    )
+    known = ["https://novels.example/book/1/c1.html"]
+    assert updates.discover_links(html, INDEX, known) == [
+        "https://novels.example/book/1/c2.html"
+    ]
+
+
+def test_discover_refuses_flat_site():
+    html = '<a href="/c1.html">1</a><a href="/c2.html">2</a><a href="/login">l</a>'
+    known = ["https://novels.example/c1.html"]
+    assert updates.chapter_pattern(known, "novels.example") is None
+    assert updates.discover_links(html, "https://novels.example/", known) == []
+
+
+def _seed(db_session, index, known_urls):
+    from app.storage.repository import create_novel, insert_chapter, update_novel
+
+    n = create_novel(db_session, title="t", source_lang="zh")
+    update_novel(db_session, n.id, source_index_url=index)
+    for i, u in enumerate(known_urls):
+        insert_chapter(
+            db_session, novel_id=n.id, idx=i, title=f"c{i}", source_text="x", source_url=u
+        )
+    db_session.commit()
+    return n.id
+
+
+@pytest.mark.db
+def test_check_updates_flat_site_is_409(admin_client, db_session, monkeypatch):
+    nid = _seed(db_session, "https://flat.example/", ["https://flat.example/c1.html"])
+
+    async def no_fetch(url):
+        raise AssertionError("must not fetch")
+
+    monkeypatch.setattr(updates, "fetch_html", no_fetch)
+    r = admin_client.post(f"/novels/{nid}/check-updates")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_chapter_pattern"
+
+
+@pytest.mark.db
+def test_check_updates_skips_unsafe_page_caps_and_survives_embed_failure(
+    admin_client, db_session, monkeypatch
+):
+    nid = _seed(db_session, INDEX, ["https://novels.example/book/1/c0.html"])
+    links = "".join(f'<a href="/book/1/n{i}.html">x</a>' for i in range(30))
+
+    async def fake_html(url):
+        return links
+
+    async def fake_scrape(u):
+        if u.endswith("/n3.html"):
+            raise UnsafeURL("private")
+        return ScrapedPage(url=u, title="T", text="body")
+
+    async def bad_embed(novel_id, chaps):
+        raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr(updates, "fetch_html", fake_html)
+    monkeypatch.setattr(updates, "scrape_url", fake_scrape)
+    monkeypatch.setattr(updates, "embed_chapters", bad_embed)
+    r = admin_client.post(f"/novels/{nid}/check-updates")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["added"] == 19  # 20 attempted, one blocked page skipped
+    assert j["embedded"] is False
+    assert f'make reembed ARGS="--novel {nid}"' in j["hint"]

@@ -22,7 +22,7 @@ from ..ingest.pdf_loader import load_pdf
 from ..ingest.scraper import FetchTooLarge, UnsafeURL, fetch_bytes_guarded, scrape_many
 from ..ingest.splitter import split_chapters
 from ..ingest.updates import (
-    NovelNotFound, UpdateCheckUnavailable, check_novel_updates,
+    NoChapterPattern, NovelNotFound, UpdateCheckUnavailable, check_novel_updates,
 )
 from ..ingest.txt_loader import load_txt
 from ..llm.resolve import resolve_llm
@@ -155,7 +155,7 @@ async def rankings_route(
             RankedNovelOut(
                 **_novel_out(
                     r.novel, r.chapter_count, r.char_count, r.translated_count,
-                    r.views_total,
+                    r.views_total, r.rating_avg, r.rating_count,
                 ).model_dump(),
                 views=views,
                 rank=i,
@@ -588,8 +588,10 @@ async def ingest_url(
         raise HTTPException(400, "scrape returned empty text")
     lang = body.source_lang or detect_lang(combined)
     parsed = split_chapters(combined)
+    one_per_page = False
     if not parsed:
         # Fallback: one chapter per page
+        one_per_page = True
         parsed_pages = []
         for i, p in enumerate(pages):
             if p.text.strip():
@@ -605,7 +607,11 @@ async def ingest_url(
             s, novel.id, source_index_url=(body.index_url or body.urls[0])[:1024]
         )
         # One chapter per page is the only case where a chapter's URL is known.
-        per_page = len(parsed) == len(pages) and all(p.text.strip() for p in pages)
+        per_page = (
+            one_per_page
+            and len(parsed) == len(pages)
+            and all(p.text.strip() for p in pages)
+        )
         n = 0
         for i, c in enumerate(parsed):
             insert_chapter(
@@ -626,9 +632,13 @@ async def check_updates(
 ) -> UpdateCheckResult:
     """Scrape chapters that appeared on the source index since the import."""
     try:
-        added = await check_novel_updates(novel_id)
+        outcome = await check_novel_updates(novel_id)
     except NovelNotFound:
         raise HTTPException(404, "novel not found")
+    except NoChapterPattern as e:
+        raise HTTPException(
+            409, detail={"code": "no_chapter_pattern", "detail": str(e)}
+        )
     except UpdateCheckUnavailable as e:
         raise HTTPException(409, str(e))
     except UnsafeURL as e:
@@ -640,7 +650,15 @@ async def check_updates(
                 "detail": "The source URL can't be fetched (only public http/https addresses are allowed).",
             },
         )
-    return UpdateCheckResult(added=added)
+    hint = None
+    if not outcome.embedded:
+        hint = (
+            "Chapters were added but not embedded; run "
+            f'`make reembed ARGS="--novel {novel_id}"`.'
+        )
+    return UpdateCheckResult(
+        added=outcome.added, embedded=outcome.embedded, hint=hint
+    )
 
 
 @router.post("/novels/embed", response_model=EmbedResult)

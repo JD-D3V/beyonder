@@ -83,8 +83,8 @@ def test_report_validation(client):
 
 
 def test_display_name_never_leaks_domain():
-    assert social._display_name("alice@example.com") == "alice"
-    assert social._display_name("") == "reader"
+    assert social._display_name(None, 7) == "reader-7"
+    assert social._display_name("Alice_1", 7) == "Alice_1"
 
 
 # --- DB ------------------------------------------------------------------
@@ -149,7 +149,7 @@ def test_review_upsert_rating_and_catalog(client, world):
     assert rating["histogram"] == {"1": 0, "2": 1, "3": 0, "4": 0, "5": 1}
 
     reviews = client.get(f"/novels/{n}/reviews").json()
-    assert [r["author"] for r in reviews] == ["bob", "alice"]  # newest first
+    assert [r["author"] for r in reviews] == ["reader-%d" % world["bob"], "reader-%d" % world["alice"]]  # newest first
     assert "@" not in str(reviews)
     assert len(client.get(f"/novels/{n}/reviews?limit=1&offset=1").json()) == 1
 
@@ -208,7 +208,7 @@ def test_comments_threading_and_soft_delete(client, world):
     tree = client.get(url).json()
     assert [c["id"] for c in tree] == [b["id"], a["id"]]  # newest first
     assert [c["id"] for c in tree[1]["replies"]] == [r1["id"], r2["id"]]
-    assert tree[1]["author"] == "alice" and "@" not in str(tree)
+    assert tree[1]["author"] == "reader-%d" % world["alice"] and "@" not in str(tree)
 
     # bob cannot delete alice's comment; admin and author can
     assert client.delete(f"/comments/{a['id']}").status_code == 403
@@ -287,8 +287,8 @@ def test_reports_idempotent_and_admin_flow(client, world):
     pending = client.get("/admin/reports?resolved=false").json()
     assert len(pending) == 1
     rep = pending[0]
-    assert rep["target_body"] == "spam" and rep["target_author"] == "alice"
-    assert rep["reporter"] == "bob"
+    assert rep["target_body"] == "spam" and rep["target_author"] == "reader-%d" % world["alice"]
+    assert rep["reporter"] == "reader-%d" % world["bob"]
     assert client.post(f"/admin/reports/{rep['id']}/resolve").status_code == 200
     assert client.get("/admin/reports").json() == []
     assert len(client.get("/admin/reports?resolved=true").json()) == 1

@@ -118,6 +118,8 @@ class IngestUrlIn(BaseModel):
 
 class UpdateCheckResult(BaseModel):
     added: int
+    embedded: bool = True
+    hint: str | None = None
 
 
 class IngestResult(BaseModel):

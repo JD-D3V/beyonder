@@ -6,8 +6,10 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+import re
+
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
@@ -92,10 +94,47 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,24}$")
+_NAME_TAKEN = "That public name is taken."
+
+
+def _check_name(v: str | None) -> str | None:
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if not _NAME_RE.match(v) or re.fullmatch(r"reader-\d+", v, re.I):
+        raise ValueError("3-24 letters, digits, - or _ (not reader-<number>)")
+    return v
+
+
+def _name_taken(s, name: str, exclude_id: int | None = None) -> bool:
+    q = select(User.id).where(func.lower(User.display_name) == name.lower())
+    if exclude_id is not None:
+        q = q.where(User.id != exclude_id)
+    return s.execute(q).first() is not None
+
+
 class SignupIn(BaseModel):
     email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     password: str = Field(min_length=MIN_PASSWORD, max_length=1024)
     invite: str = Field(min_length=1, max_length=128)
+    display_name: str | None = Field(default=None, max_length=64)
+
+    @field_validator("display_name")
+    @classmethod
+    def _v_name(cls, v: str | None) -> str | None:
+        return _check_name(v)
+
+
+class ProfileIn(BaseModel):
+    display_name: str | None = Field(default=None, max_length=64)
+
+    @field_validator("display_name")
+    @classmethod
+    def _v_name(cls, v: str | None) -> str | None:
+        return _check_name(v)
 
 
 class InviteIn(BaseModel):
@@ -103,7 +142,12 @@ class InviteIn(BaseModel):
 
 
 def _user_out(u: User) -> dict:
-    return {"id": u.id, "email": u.email, "is_admin": u.is_admin}
+    return {
+        "id": u.id,
+        "email": u.email,
+        "is_admin": u.is_admin,
+        "display_name": getattr(u, "display_name", None),
+    }
 
 
 @router.post("/auth/login")
@@ -133,13 +177,25 @@ async def signup(body: SignupIn, request: Request) -> dict:
         inv = s.get(Invite, body.invite)
         if inv is None or inv.used_by is not None or inv.used_at is not None or inv.expires_at <= now:
             raise invalid
-        user = User(email=email, password_hash=await _hash(body.password))
+        if body.display_name and _name_taken(s, body.display_name):
+            raise HTTPException(status_code=409, detail=_NAME_TAKEN)
+        user = User(
+            email=email,
+            password_hash=await _hash(body.password),
+            display_name=body.display_name,
+        )
         s.add(user)
         try:
             s.flush()
         except IntegrityError:
             s.rollback()
-            raise HTTPException(status_code=409, detail="That email is already registered.")
+            raise HTTPException(
+                status_code=409,
+                detail=_NAME_TAKEN
+                if body.display_name
+                and _name_taken(s, body.display_name)
+                else "That email is already registered.",
+            )
         # Atomic claim: of two concurrent signups on one code only one updates a row.
         claimed = s.execute(
             update(Invite)
@@ -167,6 +223,25 @@ async def logout(request: Request, _user: User = Depends(current_user)) -> dict:
 @router.get("/auth/me")
 async def me(user: User = Depends(current_user)) -> dict:
     return _user_out(user)
+
+
+@router.patch("/auth/me")
+async def update_me(body: ProfileIn, user: User = Depends(current_user)) -> dict:
+    """Set or clear the public name shown on reviews and comments."""
+    with get_session() as s:
+        row = s.get(User, user.id)
+        if row is None:
+            raise HTTPException(status_code=401, detail="Not signed in.")
+        name = body.display_name
+        if name and _name_taken(s, name, exclude_id=row.id):
+            raise HTTPException(status_code=409, detail=_NAME_TAKEN)
+        row.display_name = name
+        try:
+            s.flush()
+        except IntegrityError:
+            s.rollback()
+            raise HTTPException(status_code=409, detail=_NAME_TAKEN)
+        return _user_out(row)
 
 
 @router.post("/admin/invites")

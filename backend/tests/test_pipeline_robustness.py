@@ -203,3 +203,42 @@ def test_redaction_recurses_into_nested():
     assert out["items"][0] == {"password": "***", "keep": "v"}
     assert out["items"][1][0]["Token"] == "***"
     assert out["API_KEY"] == "***"
+
+
+@pytest.mark.db
+def test_ingest_url_source_url_only_for_one_chapter_per_page(db_session, monkeypatch):
+    from sqlalchemy import select
+
+    from app.ingest.scraper import ScrapedPage
+    from app.storage.models import Chapter
+
+    def run(texts):
+        async def fake(urls, concurrency=3):
+            return [ScrapedPage(url=u, title=None, text=t) for u, t in zip(urls, texts)]
+
+        monkeypatch.setattr("app.api.novels.scrape_many", fake)
+        app.dependency_overrides[current_user] = lambda: SimpleNamespace(
+            id=1, email="u@x", is_admin=False
+        )
+        try:
+            with TestClient(app) as c:
+                r = c.post(
+                    "/novels/ingest/url",
+                    json={"title": "t", "urls": [f"https://e.example/a/{i}" for i in range(len(texts))]},
+                )
+        finally:
+            app.dependency_overrides.clear()
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        return db_session.scalars(
+            select(Chapter.source_url).where(Chapter.novel_id == r.json()["novel_id"]).order_by(Chapter.idx)
+        ).all()
+
+    # Headings inside the pages split them into as many chapters as pages,
+    # but the chapters did not come one-per-page: no URLs recorded.
+    assert run(["Chapter 1\nfirst body text here.", "Chapter 2\nsecond body text here."]) == [None, None]
+    # Splitter finds nothing: the one-chapter-per-page fallback records each URL.
+    monkeypatch.setattr("app.api.novels.split_chapters", lambda text: [])
+    assert run(["just some prose.", "more prose here."]) == [
+        "https://e.example/a/0", "https://e.example/a/1",
+    ]
