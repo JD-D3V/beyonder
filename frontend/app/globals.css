@@ -464,3 +464,20 @@ input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color:
 /* --- site theme toggle -------------------------------------------------- */
 nav.topnav .links { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; }
 nav.topnav .theme-toggle button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; }
+
+/* --- site: covers, rankings, admin ------------------------------------- */
+.cover-img { overflow: hidden; padding: 0; }
+.cover-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.site-stats { margin-top: 4px; }
+.new-badge { background: var(--accent); color: #fff; }
+.rank-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.rank-item { display: flex; align-items: center; gap: 14px; }
+.rank-num { width: 2rem; text-align: center; font-size: 1.3rem; font-weight: 700; color: var(--muted); }
+.rank-item:nth-child(-n+3) .rank-num { color: var(--accent); }
+.rank-link { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.rank-body { min-width: 0; }
+.admin-section { margin-bottom: 28px; }
+.admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.admin-list li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.report-item { justify-content: space-between; align-items: flex-start !important; }
+.report-text { white-space: pre-wrap; margin-top: 4px; max-width: 60ch; }

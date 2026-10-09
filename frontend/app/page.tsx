@@ -6,6 +6,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../components/BookCover";
 import { IconArrowUpDown, IconChevronDown, IconSearch, IconSlidersHorizontal, IconUpload, IconX } from "../components/icons";
 import { api, displayTitle, errorText, Novel, NovelQuery } from "../lib/api";
+import { SiteStats } from "../lib/api-site";
 
 const PAGE_SIZE = 24;
 
@@ -18,7 +19,7 @@ const LENGTHS: Record<string, { label: string; min?: number; max?: number }> = {
   epic: { label: "1000+", min: 1000 },
 };
 
-const SORTS = ["updated", "new", "chapters"] as const;
+const SORTS = ["updated", "new", "chapters", "views", "rating"] as const;
 type SortKey = (typeof SORTS)[number];
 
 function compactNumber(n: number): string {
@@ -84,7 +85,7 @@ function CatalogInner() {
         status: status || undefined,
         min_chapters: len.min,
         max_chapters: len.max,
-        sort,
+        sort: sort as NovelQuery["sort"],
         limit: PAGE_SIZE,
         offset,
       };
@@ -198,6 +199,8 @@ function CatalogInner() {
           <option value="updated">Recently updated</option>
           <option value="new">Newest</option>
           <option value="chapters">Most chapters</option>
+          <option value="views">Most viewed</option>
+          <option value="rating">Top rated</option>
         </select>
         {filtered && (
           <button
@@ -236,10 +239,11 @@ function CatalogInner() {
           const pct = n.chapter_count
             ? Math.round((n.translated_count / n.chapter_count) * 100)
             : 0;
+          const st = n as Novel & SiteStats;
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} />
                 <div className="body">
                   <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
@@ -247,6 +251,14 @@ function CatalogInner() {
                     <span className={`pill status-${n.status}`}>{n.status}</span>
                     <span className="pill">{n.chapter_count} ch</span>
                     <span className="pill">{n.source_lang}</span>
+                  </div>
+                  <div className="pill-row site-stats">
+                    <span className="pill">{compactNumber(st.views_total ?? 0)} views</span>
+                    <span className="pill">
+                      {st.rating_avg != null
+                        ? `\u2605 ${st.rating_avg.toFixed(1)} (${st.rating_count ?? 0})`
+                        : "No ratings"}
+                    </span>
                   </div>
                   <div className="meter" aria-hidden="true">
                     <span style={{ width: `${pct}%` }} />

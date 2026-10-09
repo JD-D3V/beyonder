@@ -24,6 +24,7 @@ import {
 const LINKS = [
   { href: "/", label: "Catalog" },
   { href: "/library", label: "My Library" },
+  { href: "/rankings", label: "Rankings" },
   { href: "/import", label: "Import" },
   { href: "/reader", label: "Reader" },
   { href: "/glossary", label: "Glossary" },
@@ -109,6 +110,11 @@ export default function Nav() {
             </Link>
           );
         })}
+        {session?.user.is_admin && (
+          <Link href="/admin" className={pathname.startsWith("/admin") ? "active" : ""}>
+            Admin
+          </Link>
+        )}
         <Link href="/settings" className={pathname.startsWith("/settings") ? "active" : ""}>
           <IconSettings size={16} /> Settings
         </Link>
