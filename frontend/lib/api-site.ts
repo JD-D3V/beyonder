@@ -1,4 +1,4 @@
-import { req, type AuthUser } from "./api";
+import { req, type AuthUser, type Visibility } from "./api";
 
 // Fields the backend adds to every catalog entry (views, ratings, cover).
 export interface SiteStats {
@@ -38,7 +38,27 @@ export interface AdminReport {
   target_author: string | null;
 }
 
+export interface ImportJob {
+  id: number;
+  novel_id: number | null;
+  status: "queued" | "running" | "done" | "failed";
+  total: number;
+  done: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export const siteApi = {
+  ingestToc: (body: {
+    index_url: string;
+    title?: string;
+    max_chapters?: number;
+    visibility?: Visibility;
+  }) =>
+    req<{ job_id: number }>("/novels/ingest/toc", { method: "POST", body: JSON.stringify(body) }),
+  importJob: (id: number) => req<ImportJob>(`/imports/${id}`),
+  myImports: () => req<ImportJob[]>("/imports?mine=true"),
   rankings: (period: RankPeriod, limit = 50) =>
     req<RankedNovel[]>(`/rankings?period=${period}&limit=${limit}`),
   listInvites: () => req<Invite[]>("/admin/invites"),

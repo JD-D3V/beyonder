@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # is what small cloud instances want.
     scraper_backend: str = "auto"
 
+    # Hours between automatic new-chapter checks of public URL-imported books.
+    # 0 turns the in-process loop off (use `make check-updates` from cron).
+    auto_update_hours: float = Field(default=0, ge=0)
+
     # Number of trusted reverse proxies in front of the app. 0 ignores
     # X-Forwarded-For (client-controlled) and keys the login throttle on the
     # socket peer. N takes the Nth entry from the right: the address appended

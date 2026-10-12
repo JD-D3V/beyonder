@@ -7,6 +7,8 @@ In Docker the same command runs.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,8 @@ from .api.auth_routes import router as auth_router
 from .api.router import router
 from .common.config import settings
 from .common.logging import get_logger
+from .ingest.auto_update import update_loop
+from .ingest.toc_import import mark_interrupted_jobs
 from .llm.client import LLMError
 from .storage.db import init_engine
 
@@ -62,6 +66,16 @@ def create_app() -> FastAPI:
             db=settings.database_url.split("@")[-1],
             qdrant=settings.qdrant_url,
         )
+        try:
+            n = mark_interrupted_jobs()
+            if n:
+                log.warning("startup.import_jobs_interrupted", count=n)
+        except Exception as e:  # noqa: BLE001 - e.g. migrations not applied yet
+            log.warning("startup.import_jobs_check_failed", err=str(e))
+        if settings.auto_update_hours > 0:
+            app.state.auto_update = asyncio.create_task(
+                update_loop(settings.auto_update_hours)
+            )
 
     return app
 

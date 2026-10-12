@@ -127,6 +127,28 @@ class UpdateCheckResult(BaseModel):
     hint: str | None = None
 
 
+class IngestTocIn(BaseModel):
+    index_url: str = Field(min_length=1, max_length=1024)
+    title: Optional[str] = Field(default=None, max_length=512)
+    max_chapters: int = Field(default=200, ge=1, le=500)
+    visibility: Optional[Literal["public", "private"]] = None
+
+
+class ImportJobOut(BaseModel):
+    id: int
+    novel_id: Optional[int] = None
+    status: Literal["queued", "running", "done", "failed"]
+    total: int
+    done: int
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IngestTocAccepted(BaseModel):
+    job_id: int
+
+
 class IngestResult(BaseModel):
     novel_id: int
     chapters_added: int
