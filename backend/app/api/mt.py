@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.throttle import SlidingWindow
 from ..common.config import settings
+from ..mt.libre import libre_translate
 from .auth_routes import client_ip
 
 router = APIRouter(prefix="/mt")
@@ -57,15 +58,8 @@ async def mt_translate(body: TranslateIn, request: Request) -> TranslateOut:
             429, "too many translation requests, try again in a few minutes"
         )
     try:
-        async with httpx.AsyncClient(timeout=60, transport=_transport) as c:
-            r = await c.post(
-                f"{base}/translate",
-                json={"q": body.texts, "source": "zh", "target": "en", "format": "text"},
-            )
-        r.raise_for_status()
-        out = r.json().get("translatedText")
-        if not isinstance(out, list) or len(out) != len(body.texts):
-            raise ValueError("unexpected response shape")
-        return TranslateOut(texts=[str(t) for t in out])
+        return TranslateOut(
+            texts=await libre_translate(base, body.texts, "zh", _transport)
+        )
     except (httpx.HTTPError, ValueError) as e:
         raise HTTPException(502, "translation service failed") from e

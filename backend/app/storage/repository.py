@@ -11,7 +11,7 @@ from typing import Iterable, Sequence
 from sqlalchemy import Select, delete as sa_delete, false, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..common.config import settings
 from .models import (
@@ -135,8 +135,9 @@ def upsert_translation(
     overwrite: bool = False,
     allow_empty: bool = False,
     title: str | None = None,
+    engine: str = "ai",
 ) -> bool:
-    """Insert or replace the translation for (chapter, lang). True if it wrote.
+    """Insert or replace the translation for (chapter, lang, engine). True if it wrote.
 
     ``pieces_done`` is the resumable-progress marker: leave it None to mark the
     row complete (single-pass results and finished step runs), or pass the count
@@ -160,6 +161,7 @@ def upsert_translation(
         .where(
             Translation.chapter_id == chapter_id,
             Translation.target_lang == target_lang,
+            Translation.engine == engine,
         )
         .with_for_update()
     ).scalar_one_or_none()
@@ -186,6 +188,7 @@ def upsert_translation(
                 Translation(
                     chapter_id=chapter_id,
                     target_lang=target_lang,
+                    engine=engine,
                     text=text,
                     model=model,
                     critic_passes=critic_passes,
@@ -201,17 +204,20 @@ def upsert_translation(
             session, chapter_id=chapter_id, target_lang=target_lang, text=text,
             model=model, critic_passes=critic_passes, pieces_done=pieces_done,
             translated_by=translated_by, overwrite=overwrite,
-            allow_empty=allow_empty, title=title,
+            allow_empty=allow_empty, title=title, engine=engine,
         )
     return True
 
 
-def reset_translation(session: Session, *, chapter_id: int, target_lang: str) -> None:
+def reset_translation(
+    session: Session, *, chapter_id: int, target_lang: str, engine: str = "ai"
+) -> None:
     """Delete the saved translation so a forced re-translate starts clean."""
     session.execute(
         sa_delete(Translation).where(
             Translation.chapter_id == chapter_id,
             Translation.target_lang == target_lang,
+            Translation.engine == engine,
         )
     )
     session.flush()
@@ -482,10 +488,11 @@ class LibraryRow:
     novel: Novel
     chapter_count: int
     char_count: int
-    translated_count: int
+    translated_count: int  # complete translation by either engine
     views_total: int = 0
     rating_avg: float | None = None
     rating_count: int = 0
+    ai_translated_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -533,6 +540,9 @@ def catalog_query(params: CatalogParams) -> Select:
         select(
             Chapter.novel_id.label("novel_id"),
             func.count(func.distinct(Translation.chapter_id)).label("translated"),
+            func.count(func.distinct(Translation.chapter_id))
+            .filter(Translation.engine == "ai")
+            .label("ai_translated"),
         )
         .join(Translation, Translation.chapter_id == Chapter.id)
         # Only fully-translated chapters count; a resumable partial has a row
@@ -569,6 +579,7 @@ def catalog_query(params: CatalogParams) -> Select:
             n_views,
             rate.c.avg,
             func.coalesce(rate.c.n, 0),
+            func.coalesce(trans.c.ai_translated, 0),
         )
         .outerjoin(chap, chap.c.novel_id == Novel.id)
         .outerjoin(trans, trans.c.novel_id == Novel.id)
@@ -635,8 +646,9 @@ def library_rows(
             views_total=int(v),
             rating_avg=float(ra) if ra is not None else None,
             rating_count=int(rc),
+            ai_translated_count=int(ai),
         )
-        for n, c, ch, t, v, ra, rc in session.execute(stmt).all()
+        for n, c, ch, t, v, ra, rc, ai in session.execute(stmt).all()
     ]
 
 
@@ -703,17 +715,20 @@ class ChapterRow:
     idx: int
     title: str | None
     char_count: int
-    translated: bool  # complete only
+    translated: bool  # complete AI translation only
     # Set when a resumable translation is mid-flight (pieces done so far); None
     # when the chapter is untranslated or fully complete.
     pieces_done: int | None = None
+    # AI title, else the machine-translated title.
     title_en: str | None = None
+    mt: bool = False  # a machine translation exists
 
 
 def chapter_rows(
     session: Session, novel_id: int, *, target_lang: str = "en"
 ) -> list[ChapterRow]:
     """Chapter list for a book page, each flagged translated / partial / none."""
+    mt_tr = aliased(Translation)
     stmt = (
         select(
             Chapter.idx,
@@ -722,17 +737,26 @@ def chapter_rows(
             Translation.id,
             Translation.pieces_done,
             Translation.title,
+            mt_tr.id,
+            mt_tr.title,
         )
         .outerjoin(
             Translation,
             (Translation.chapter_id == Chapter.id)
-            & (Translation.target_lang == target_lang),
+            & (Translation.target_lang == target_lang)
+            & (Translation.engine == "ai"),
+        )
+        .outerjoin(
+            mt_tr,
+            (mt_tr.chapter_id == Chapter.id)
+            & (mt_tr.target_lang == target_lang)
+            & (mt_tr.engine == "mt"),
         )
         .where(Chapter.novel_id == novel_id)
         .order_by(Chapter.idx)
     )
     rows: list[ChapterRow] = []
-    for i, t, c, tr_id, pieces, tr_title in session.execute(stmt).all():
+    for i, t, c, tr_id, pieces, tr_title, mt_id, mt_title in session.execute(stmt).all():
         has_row = tr_id is not None
         rows.append(
             ChapterRow(
@@ -741,19 +765,21 @@ def chapter_rows(
                 char_count=c,
                 translated=has_row and pieces is None,
                 pieces_done=pieces if has_row else None,
-                title_en=tr_title if has_row else None,
+                title_en=(tr_title if has_row else None) or mt_title or None,
+                mt=mt_id is not None,
             )
         )
     return rows
 
 
 def get_translation(
-    session: Session, *, chapter_id: int, target_lang: str = "en"
+    session: Session, *, chapter_id: int, target_lang: str = "en", engine: str = "ai"
 ) -> Translation | None:
     return session.execute(
         select(Translation).where(
             Translation.chapter_id == chapter_id,
             Translation.target_lang == target_lang,
+            Translation.engine == engine,
         )
     ).scalar_one_or_none()
 
@@ -769,6 +795,7 @@ def untitled_translations(
         .where(
             Chapter.novel_id == novel_id,
             Translation.target_lang == target_lang,
+            Translation.engine == "ai",
             Translation.pieces_done.is_(None),
             Translation.text != "",
             Translation.title.is_(None),
@@ -787,6 +814,7 @@ def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
         return None
     allowed = {
         "title", "title_en", "author", "description", "tags", "status",
+        "author_en", "description_en",
         "source_lang", "source_index_url", "visibility",
     }
     for key, value in fields.items():

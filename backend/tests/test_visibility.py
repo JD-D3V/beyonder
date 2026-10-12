@@ -91,6 +91,8 @@ def client(monkeypatch):
     import app.api.novels as novels
     import app.api.reader as reader
     import app.api.translate as translate
+    from app.common.config import settings
+    from app.mt import job as mt_job
 
     async def fake_embed(novel_id, chaps):
         return 0
@@ -123,6 +125,9 @@ def client(monkeypatch):
     monkeypatch.setattr(reader, "answer_question", fake_answer)
     monkeypatch.setattr(translate, "run_translation_graph", fake_graph)
     monkeypatch.setattr(translate, "translate_step", fake_step)
+    # POST /novels/{id}/mt must queue a job without touching the network.
+    monkeypatch.setattr(settings, "mt_provider", "google_free")
+    monkeypatch.setattr(mt_job, "enqueue", lambda *a, **k: True)
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -155,6 +160,8 @@ ROUTES = [
     R("GET", "/novels/{n}/chapters/0"),
     R("POST", "/novels/{n}/titles/translate", admin_only=True, headers=KEY),
     R("POST", "/novels/{n}/check-updates", admin_only=True),
+    R("GET", "/novels/{n}/mt"),
+    R("POST", "/novels/{n}/mt", ok=(202,), admin_only=True),
     R("POST", "/novels/embed", json={"novel_id": "{n}"}),
     R("POST", "/ask", json={"novel_id": "{n}", "question": "q"}, headers=KEY),
     R("GET", "/novels/{n}/glossary"),

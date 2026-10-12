@@ -62,6 +62,10 @@ class Novel(Base):
     title_en: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     author: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # English renderings filled by the machine-translation job (title_en above
+    # is shared with the AI path); NULL until translated.
+    author_en: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    description_en: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Comma-separated and lowercased. See the 0002 migration for why not a join.
     tags: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="ongoing")
@@ -120,7 +124,10 @@ class Chapter(Base):
 class Translation(Base):
     __tablename__ = "translations"
     __table_args__ = (
-        UniqueConstraint("chapter_id", "target_lang", name="uq_translation_chap_lang"),
+        UniqueConstraint(
+            "chapter_id", "target_lang", "engine", name="uq_translation_chap_lang_engine"
+        ),
+        CheckConstraint("engine IN ('ai', 'mt')", name="ck_translations_engine"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -128,6 +135,10 @@ class Translation(Base):
         ForeignKey("chapters.id", ondelete="CASCADE")
     )
     target_lang: Mapped[str] = mapped_column(String(8))
+    # 'ai' (LLM pipeline, BYOK) or 'mt' (server-side machine translation).
+    engine: Mapped[str] = mapped_column(
+        String(8), default="ai", server_default="ai"
+    )
     text: Mapped[str] = mapped_column(Text)
     # Translated chapter title for this language; NULL until translated.
     title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -307,6 +318,30 @@ class ImportJob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MtJob(Base):
+    """Machine-translation progress for one book (see ``app/mt/job.py``)."""
+
+    __tablename__ = "mt_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')",
+            name="ck_mt_jobs_status",
+        ),
+    )
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    done: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    boot_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

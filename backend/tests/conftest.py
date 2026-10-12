@@ -41,3 +41,15 @@ def _reset_login_throttles():
     reset_throttles()
     yield
     reset_throttles()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_network(monkeypatch):
+    """New books enqueue machine translation and a cover search; both talk to
+    the network. Off by default in tests; the tests that exercise them turn
+    them back on with HTTP mocked."""
+    from app.common.config import settings
+
+    monkeypatch.setattr(settings, "mt_provider", "off")
+    monkeypatch.setattr(settings, "auto_covers", False)
+    yield

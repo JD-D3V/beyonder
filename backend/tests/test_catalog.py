@@ -126,7 +126,7 @@ def test_library_get_groups_shelves(client, monkeypatch):
     from app.storage.repository import LibraryRow
 
     n = SimpleNamespace(
-        id=1, title="T", title_en=None, author=None, description=None, tags="a, b",
+        id=1, title="T", title_en=None, author=None, author_en=None, description=None, description_en=None, tags="a, b",
         status="ongoing", source_lang="zh", source_url=None, updated_at=None,
         visibility="public",
     )

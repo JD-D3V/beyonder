@@ -415,3 +415,40 @@ def test_seed_skip_only_matches_public_ownerless(db_session, world):
 
     asyncio.run(seed_classics.seed_work(Spy(), work, 5))
     assert calls == []  # skipped: public ownerless copy exists
+
+
+@pytest.mark.db
+def test_toc_import_queues_mt_and_cover_without_blocking(client, world, monkeypatch):
+    import app.api.imports as imports
+    import app.ingest.cover_fetch as cover_fetch
+    import app.mt.job as mt_job
+
+    async def fetch(url):
+        return '<meta property="og:image" content="/img/cover.jpg">' + HTML
+
+    queued, covers = [], []
+    monkeypatch.setattr(imports, "fetch_html", fetch)
+    monkeypatch.setattr(mt_job, "enqueue", lambda nid, **k: queued.append(nid) or True)
+    monkeypatch.setattr(
+        cover_fetch, "spawn_auto_cover", lambda nid, **k: covers.append((nid, k))
+    )
+    act_as(world["user"])
+    r = client.post("/novels/ingest/toc", json={"index_url": INDEX})
+    job = wait_done(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    assert queued == [job["novel_id"]]
+    assert covers == [(job["novel_id"], {
+        "image_urls": ["https://novels.example/img/cover.jpg", None]})]
+
+
+@pytest.mark.db
+def test_toc_import_survives_mt_and_cover_errors(client, world, monkeypatch):
+    import app.ingest.cover_fetch as cover_fetch
+    import app.mt.job as mt_job
+
+    monkeypatch.setattr(mt_job, "ensure_job", lambda n: 1 / 0)
+    monkeypatch.setattr(__import__("app.common.config", fromlist=["settings"]).settings, "mt_provider", "google_free")
+    monkeypatch.setattr(cover_fetch.settings, "auto_covers", True)
+    act_as(world["user"])
+    r = client.post("/novels/ingest/toc", json={"index_url": INDEX})
+    assert wait_done(client, r.json()["job_id"])["status"] == "done"

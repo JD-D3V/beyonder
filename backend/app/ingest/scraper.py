@@ -50,6 +50,8 @@ class ScrapedPage:
     url: str
     title: str | None
     text: str
+    # og:image / twitter:image / first large <img>, when the page has one.
+    cover_url: str | None = None
 
 
 async def _extract(html: str) -> tuple[str | None, str]:
@@ -272,11 +274,20 @@ async def _fetch(url: str) -> str:
         return await _fetch_http(url)
 
 
+def _cover_hint(html: str, url: str) -> str | None:
+    try:
+        from .cover_fetch import extract_cover_url
+
+        return extract_cover_url(html, url)
+    except Exception:  # noqa: BLE001 - a cover hint is never worth failing a scrape
+        return None
+
+
 async def scrape_url(url: str) -> ScrapedPage:
     log.info("scrape.start", url=url, backend=settings.scraper_backend)
     html = await _fetch(url)
     title, text = await _extract(html)
-    return ScrapedPage(url=url, title=title, text=text)
+    return ScrapedPage(url=url, title=title, text=text, cover_url=_cover_hint(html, url))
 
 
 async def scrape_many(urls: list[str], concurrency: int = 3) -> list[ScrapedPage]:

@@ -226,8 +226,8 @@ def test_novel_out_has_title_en():
     import app.api.novels as novels
 
     n = SimpleNamespace(
-        id=1, title="修仙传", title_en="Tale", author=None, description=None,
-        tags=None, status="ongoing", source_lang="zh", source_url=None,
+        id=1, title="修仙传", title_en="Tale", author=None, author_en=None,
+        description=None, description_en=None, tags=None, status="ongoing", source_lang="zh", source_url=None,
         updated_at=None, visibility="public",
     )
     assert novels._novel_out(n, 1, 1, 0).title_en == "Tale"
