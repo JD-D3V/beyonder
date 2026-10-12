@@ -15,7 +15,7 @@ import {
 import { applyTextStyle } from "../lib/textStyle";
 import { IconX } from "./icons";
 
-type View = "translation" | "source" | "both";
+type View = "ai" | "web" | "source" | "both";
 
 const FONT_ORDER: ReaderFont[] = ["nunito", "roboto", "lora", "lexend", "atkinson", "serif", "sans"];
 
@@ -471,7 +471,8 @@ export default function ReaderSettings({
                   label="View"
                   value={view}
                   options={[
-                    { value: "translation", label: "Translation" },
+                    { value: "ai", label: "AI" },
+                    { value: "web", label: "Web" },
                     { value: "source", label: "Source" },
                     { value: "both", label: "Both" },
                   ]}
