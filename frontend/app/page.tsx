@@ -7,6 +7,7 @@ import BookCover from "../components/BookCover";
 import { IconArrowUpDown, IconChevronDown, IconSearch, IconSlidersHorizontal, IconUpload, IconX } from "../components/icons";
 import { api, displayTitle, errorText, Novel, NovelQuery } from "../lib/api";
 import { SiteStats } from "../lib/api-site";
+import { getSession, SESSION_EVENT } from "../lib/session";
 
 const PAGE_SIZE = 24;
 
@@ -37,6 +38,7 @@ function CatalogInner() {
   const tag = params.get("tag") || "";
   const status = params.get("status") || "";
   const length = LENGTHS[params.get("length") || ""] ? params.get("length") || "" : "";
+  const mine = params.get("mine") === "1";
   const sortParam = params.get("sort") as SortKey | null;
   const sort: SortKey = sortParam && SORTS.includes(sortParam) ? sortParam : "updated";
 
@@ -45,6 +47,20 @@ function CatalogInner() {
   const [tagDraft, setTagDraft] = useState(tag);
   useEffect(() => setQDraft(q), [q]);
   useEffect(() => setTagDraft(tag), [tag]);
+
+  // "My imports" only makes sense when signed in.
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    const sync = () => setSignedIn(getSession() !== null);
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  const mineActive = mine && signedIn;
 
   const [novels, setNovels] = useState<Novel[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -86,11 +102,12 @@ function CatalogInner() {
         min_chapters: len.min,
         max_chapters: len.max,
         sort: sort as NovelQuery["sort"],
+        mine: mineActive || undefined,
         limit: PAGE_SIZE,
         offset,
       };
     },
-    [q, tag, status, length, sort],
+    [q, tag, status, length, sort, mineActive],
   );
 
   useEffect(() => {
@@ -127,7 +144,7 @@ function CatalogInner() {
     }
   }
 
-  const filtered = Boolean(q || tag || status || length);
+  const filtered = Boolean(q || tag || status || length || mineActive);
 
   return (
     <>
@@ -202,6 +219,15 @@ function CatalogInner() {
           <option value="views">Most viewed</option>
           <option value="rating">Top rated</option>
         </select>
+        {signedIn && (
+          <button
+            className={mineActive ? "" : "secondary"}
+            aria-pressed={mineActive}
+            onClick={() => setParam({ mine: mineActive ? "" : "1" })}
+          >
+            <span>My imports</span>
+          </button>
+        )}
         {filtered && (
           <button
             className="secondary"
@@ -243,7 +269,7 @@ function CatalogInner() {
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} visibility={n.visibility} />
                 <div className="body">
                   <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
@@ -251,6 +277,11 @@ function CatalogInner() {
                     <span className={`pill status-${n.status}`}>{n.status}</span>
                     <span className="pill">{n.chapter_count} ch</span>
                     <span className="pill">{n.source_lang}</span>
+                    {n.visibility === "private" && (
+                      <span className="pill" title="Only you and admins can see this book">
+                        Private
+                      </span>
+                    )}
                   </div>
                   <div className="pill-row site-stats">
                     <span className="pill">{compactNumber(st.views_total ?? 0)} views</span>

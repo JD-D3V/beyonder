@@ -131,10 +131,11 @@ function LibraryBody() {
           return (
             <div className="book-card" key={n.id}>
               <Link href={`/novel?id=${n.id}`}>
-                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} />
+                <BookCover title={displayTitle(n.title, n.title_en).text} id={n.id} hasCover={Boolean(st.has_cover)} coverVersion={st.cover_version} visibility={n.visibility} />
                 <div className="body">
                   <div className="title" title={displayTitle(n.title, n.title_en).hover}>{displayTitle(n.title, n.title_en).text}</div>
                   <div className="author">{n.author || "Unknown author"}</div>
+                  {n.visibility === "private" && <span className="pill">Private</span>}
                   {fresh > 0 && <span className="pill new-badge">{fresh} new</span>}
                   <div className="meter" aria-hidden="true">
                     <span style={{ width: `${pct}%` }} />

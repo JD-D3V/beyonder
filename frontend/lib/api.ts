@@ -152,7 +152,11 @@ export interface Novel {
   char_count: number;
   translated_count: number;
   updated_at: string | null;
+  // Private books are visible only to their owner and admins.
+  visibility?: Visibility;
 }
+
+export type Visibility = "public" | "private";
 
 export interface ChapterRow {
   idx: number;
@@ -277,6 +281,7 @@ export interface NovelQuery {
   min_chapters?: number;
   max_chapters?: number;
   sort?: "updated" | "new" | "chapters";
+  mine?: boolean; // only the signed-in user's own imports
   limit?: number;
   offset?: number;
 }
@@ -295,6 +300,7 @@ export interface NovelPatch {
   tags?: string[];
   status?: string;
   source_lang?: string;
+  visibility?: Visibility; // admin only: publish / unpublish
 }
 
 // Translated title when present, else the source title; the source title goes
@@ -345,12 +351,18 @@ export const api = {
     author?: string;
     description?: string;
     tags?: string[];
+    visibility?: Visibility;
   }) =>
     req<IngestResult>("/novels/ingest/text", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  ingestUrl: (body: { title: string; urls: string[]; source_lang?: string }) =>
+  ingestUrl: (body: {
+    title: string;
+    urls: string[];
+    source_lang?: string;
+    visibility?: Visibility;
+  }) =>
     req<IngestResult>("/novels/ingest/url", {
       method: "POST",
       body: JSON.stringify(body),
@@ -365,6 +377,7 @@ export const api = {
       description?: string;
       tags?: string;
       source_lang?: string;
+      visibility?: Visibility;
     },
   ): Promise<IngestResult> => {
     const form = new FormData();

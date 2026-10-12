@@ -139,6 +139,48 @@ function UpdateCheck({ novelId, onChanged }: { novelId: number; onChanged: () =>
   );
 }
 
+// Admin: make a book public (in the catalog for everyone) or private again.
+function VisibilityAdmin({
+  novelId,
+  visibility,
+  onChanged,
+}: {
+  novelId: number;
+  visibility: "public" | "private";
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const next = visibility === "private" ? "public" : "private";
+  async function flip() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.patchNovel(novelId, { visibility: next });
+      onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <div className="row">
+        <button className="secondary" disabled={busy} onClick={flip}>
+          {busy ? "Saving..." : next === "public" ? "Publish" : "Unpublish"}
+        </button>
+        <span className="muted small">
+          {visibility === "private"
+            ? "Private: only the owner and admins can see this book."
+            : "Public: listed in the catalog for everyone."}
+        </span>
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function BookInner() {
@@ -503,7 +545,12 @@ function BookInner() {
 
       <div className="panel">
         <div className="book-head">
-          <BookCover title={nt.text} id={novel.id} size="lg" />
+          <BookCover
+            title={nt.text}
+            id={novel.id}
+            size="lg"
+            visibility={novel.visibility}
+          />
           <div className="info">
             {editing ? (
               <>
@@ -592,6 +639,11 @@ function BookInner() {
                     {novel.status}
                   </span>
                   <span className="pill">{novel.source_lang}</span>
+                  {novel.visibility === "private" && (
+                    <span className="pill" title="Only the owner and admins can see this book">
+                      Private
+                    </span>
+                  )}
                   {novel.tags.map((t) => (
                     <span className="pill" key={t}>
                       {t}
@@ -607,6 +659,13 @@ function BookInner() {
                   />
                 )}
                 {isAdmin && <UpdateCheck novelId={novel.id} onChanged={load} />}
+                {isAdmin && (
+                  <VisibilityAdmin
+                    novelId={novel.id}
+                    visibility={novel.visibility ?? "public"}
+                    onChanged={load}
+                  />
+                )}
                 <div className="stat-row">
                   <div className="stat">
                     <span className="v">{novel.chapter_count}</span>
@@ -903,7 +962,9 @@ function BookInner() {
         </div>
       </div>
       )}
-      <Reviews novelId={novel.id} session={session} />
+      {novel.visibility !== "private" && (
+        <Reviews novelId={novel.id} session={session} />
+      )}
     </>
   );
 }
