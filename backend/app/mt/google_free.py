@@ -16,6 +16,10 @@ URL = "https://translate.googleapis.com/translate_a/single"
 CHUNK_CHARS = 4500
 USER_AGENT = "Mozilla/5.0 (compatible; Beyonder/0.1)"
 
+# ``gtx`` is the documented client id; some networks get a captcha 429 for it
+# while the Chrome dictionary extension's id still works, so fall through.
+CLIENTS = ("gtx", "dict-chrome-ex")
+
 # Tests inject an httpx.MockTransport here.
 _transport: httpx.AsyncBaseTransport | None = None
 
@@ -36,9 +40,13 @@ class GoogleFreeProvider:
 
     async def _one(self, client: httpx.AsyncClient, q: str, sl: str, tl: str) -> str:
         async def fn() -> str:
-            r = await client.get(
-                URL, params={"client": "gtx", "sl": sl, "tl": tl, "dt": "t", "q": q}
-            )
+            for i, cid in enumerate(CLIENTS):
+                r = await client.get(
+                    URL, params={"client": cid, "sl": sl, "tl": tl, "dt": "t", "q": q}
+                )
+                if r.status_code == 429 and i < len(CLIENTS) - 1:
+                    continue
+                break
             r.raise_for_status()
             try:
                 payload = r.json()

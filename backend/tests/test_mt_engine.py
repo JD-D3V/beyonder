@@ -88,6 +88,7 @@ async def test_backoff_then_success(monkeypatch, _mt_env):
             return httpx.Response(429)
         return httpx.Response(200, json=[[["ok", "x"]], None, "zh-CN"])
 
+    monkeypatch.setattr(google_free, "CLIENTS", ("gtx",))
     _google(monkeypatch, handler)
     assert await google_free.GoogleFreeProvider().translate(["你好"]) == ["ok"]
     assert len(calls) == 3
@@ -101,6 +102,7 @@ async def test_breaker_opens_after_three_blocks_then_recovers(monkeypatch, _mt_e
         calls.append(1)
         return httpx.Response(429)
 
+    monkeypatch.setattr(google_free, "CLIENTS", ("gtx",))
     _google(monkeypatch, handler)
     p = google_free.GoogleFreeProvider()
     for _ in range(3):
@@ -116,6 +118,20 @@ async def test_breaker_opens_after_three_blocks_then_recovers(monkeypatch, _mt_e
     t = gate._paused_until + 1
     monkeypatch.setattr(gate, "_now", lambda: t)
     assert not gate.paused()
+
+
+async def test_blocked_client_id_falls_back_to_the_next(monkeypatch):
+    clients = []
+
+    def handler(req):
+        clients.append(req.url.params["client"])
+        if req.url.params["client"] == "gtx":
+            return httpx.Response(429, text="<html>Sorry</html>")
+        return httpx.Response(200, json=[[["ok", "x"]], None, "zh-CN"])
+
+    _google(monkeypatch, handler)
+    assert await google_free.GoogleFreeProvider().translate(["你好"]) == ["ok"]
+    assert clients == ["gtx", "dict-chrome-ex"]
 
 
 async def test_non_retryable_error_is_mterror(monkeypatch):
