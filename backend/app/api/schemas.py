@@ -27,6 +27,7 @@ class NovelOut(BaseModel):
     rating_count: int = 0
     has_cover: bool = False
     cover_version: Optional[str] = None
+    visibility: str = "public"
 
 
 class RankedNovelOut(NovelOut):
@@ -66,6 +67,7 @@ class NovelPatch(BaseModel):
     tags: Optional[list[str]] = None
     status: Optional[str] = Field(default=None, pattern="^(ongoing|completed|hiatus)$")
     source_lang: Optional[str] = Field(default=None, max_length=8)
+    visibility: Optional[Literal["public", "private"]] = None
 
 
 class ChapterOut(BaseModel):
@@ -105,6 +107,8 @@ class IngestTextIn(BaseModel):
     author: Optional[str] = Field(default=None, max_length=256)
     description: Optional[str] = None
     tags: Optional[list[str]] = None
+    # Non-admins always import private; admins default to public.
+    visibility: Optional[Literal["public", "private"]] = None
 
 
 class IngestUrlIn(BaseModel):
@@ -114,6 +118,7 @@ class IngestUrlIn(BaseModel):
     # Table-of-contents page for later "check for new chapters"; defaults to
     # the first URL.
     index_url: Optional[str] = Field(default=None, max_length=1024)
+    visibility: Optional[Literal["public", "private"]] = None
 
 
 class UpdateCheckResult(BaseModel):

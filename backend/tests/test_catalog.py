@@ -45,9 +45,9 @@ def test_catalog_filters_build_expected_sql():
     assert "LIMIT 10" in sql and "OFFSET 20" in sql
 
 
-def test_no_filters_no_where_and_default_sort():
+def test_no_filters_only_public_filter_and_default_sort():
     sql = _sql()
-    assert _where(sql).strip() == ""
+    assert _where(sql).replace("WHERE", "").strip() == "novels.visibility = 'public'"
     order = sql.split("ORDER BY")[1]
     assert "novels.updated_at DESC" in order and "novels.id DESC" in order
 
@@ -100,14 +100,15 @@ def test_library_requires_auth(client):
 
 def test_library_put_unknown_novel_404(client, monkeypatch):
     _login()
-    monkeypatch.setattr("app.api.library.get_novel", lambda s, nid: None)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: None)
     assert client.put("/library/1", json={"shelf": "plan"}).status_code == 404
 
 
 def test_library_put_and_delete(client, monkeypatch):
     _login()
     calls = []
-    monkeypatch.setattr("app.api.library.get_novel", lambda s, nid: object())
+    monkeypatch.setattr("app.api.access.get_novel",
+        lambda s, nid: SimpleNamespace(visibility="public"),)
     monkeypatch.setattr(
         "app.api.library.set_shelf",
         lambda s, u, n, sh: calls.append(("set", u, n, sh)),
@@ -127,10 +128,11 @@ def test_library_get_groups_shelves(client, monkeypatch):
     n = SimpleNamespace(
         id=1, title="T", title_en=None, author=None, description=None, tags="a, b",
         status="ongoing", source_lang="zh", source_url=None, updated_at=None,
+        visibility="public",
     )
     row = LibraryRow(novel=n, chapter_count=3, char_count=9, translated_count=1)
     monkeypatch.setattr(
-        "app.api.library.shelf_rows", lambda s, uid: [("reading", row, 2)]
+        "app.api.library.shelf_rows", lambda s, uid, **k: [("reading", row, 2)]
     )
     r = client.get("/library")
     assert r.status_code == 200

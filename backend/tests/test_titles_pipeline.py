@@ -174,7 +174,9 @@ def test_chapter_list_and_detail_carry_title_en(client, monkeypatch):
     from app.storage.repository import ChapterRow
 
     monkeypatch.setattr(novels, "get_session", _fake_session)
-    monkeypatch.setattr(novels, "get_novel", lambda s, n: object())
+    monkeypatch.setattr(
+        "app.api.access.get_novel", lambda s, n: SimpleNamespace(visibility="public")
+    )
     monkeypatch.setattr(
         novels, "chapter_rows",
         lambda s, n, target_lang: [
@@ -208,10 +210,13 @@ def test_patch_accepts_title_en(client, monkeypatch):
         novels, "update_novel", lambda s, nid, **f: seen.update(f) or object()
     )
 
-    async def fake_get(novel_id):
-        return {"id": 1, "title": "t", "source_lang": "zh"}
-
-    monkeypatch.setattr(novels, "get_novel_route", fake_get)
+    monkeypatch.setattr(
+        "app.api.access.get_novel", lambda s, n: SimpleNamespace(visibility="public")
+    )
+    monkeypatch.setattr(
+        novels, "_novel_detail",
+        lambda s, nid: {"id": 1, "title": "t", "source_lang": "zh"},
+    )
     res = client.patch("/novels/1", json={"title_en": "Tale"})
     assert res.status_code == 200
     assert seen["title_en"] == "Tale"
@@ -223,7 +228,7 @@ def test_novel_out_has_title_en():
     n = SimpleNamespace(
         id=1, title="修仙传", title_en="Tale", author=None, description=None,
         tags=None, status="ongoing", source_lang="zh", source_url=None,
-        updated_at=None,
+        updated_at=None, visibility="public",
     )
     assert novels._novel_out(n, 1, 1, 0).title_en == "Tale"
 
@@ -233,7 +238,7 @@ def test_titles_translate_route(client, monkeypatch):
 
     _as_admin()
     rows = {10: SimpleNamespace(title=None), 11: SimpleNamespace(title=None)}
-    novel = SimpleNamespace(title="修仙传", title_en=None)
+    novel = SimpleNamespace(title="修仙传", title_en=None, visibility="public")
     updates = []
 
     class Sess:
@@ -246,6 +251,7 @@ def test_titles_translate_route(client, monkeypatch):
 
     monkeypatch.setattr(novels, "get_session", sess)
     monkeypatch.setattr(novels, "get_novel", lambda s, n: novel)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, n: novel)
     monkeypatch.setattr(novels, "get_terms_for_chapters", lambda *a, **k: [])
     monkeypatch.setattr(novels, "resolve_llm", lambda h, u: _Llm())
     monkeypatch.setattr(

@@ -17,6 +17,7 @@ from ..storage.repository import (
     resolve_flag,
     set_progress,
 )
+from .access import visible_novel_or_404
 from .schemas import (
     AskIn,
     AskOut,
@@ -52,9 +53,7 @@ async def ask(
 ) -> AskOut:
     llm = resolve_llm(request.headers, user)
     with get_session() as s:
-        novel = get_novel(s, body.novel_id)
-        if novel is None:
-            raise HTTPException(404, "novel not found")
+        novel = visible_novel_or_404(s, body.novel_id, user)
         title = novel.title
         # The client's current_chapter is ignored: no peeking past your position.
         current = get_progress(s, user.id, body.novel_id)
@@ -88,6 +87,7 @@ async def glossary(
     user: User | None = Depends(current_user_optional),
 ):
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, user)
         terms = get_terms_for_chapters(
             s,
             novel_id,
@@ -116,6 +116,7 @@ async def knowledge_graph(
     user: User | None = Depends(current_user_optional),
 ):
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, user)
         nodes, edges = build_subgraph(
             s,
             novel_id=novel_id,
@@ -133,6 +134,7 @@ async def read_progress(
     novel_id: int, user: User = Depends(current_user)
 ) -> ProgressOut:
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, user)
         return ProgressOut(
             novel_id=novel_id, current_chapter=get_progress(s, user.id, novel_id)
         )
@@ -142,8 +144,7 @@ async def read_progress(
 async def progress(body: ProgressIn, user: User = Depends(current_user)) -> dict:
     """Explicit set: unlike reading a chapter, this may move the position back."""
     with get_session() as s:
-        if get_novel(s, body.novel_id) is None:
-            raise HTTPException(404, "novel not found")  # not an FK 500
+        visible_novel_or_404(s, body.novel_id, user)  # 404, not an FK 500
         set_progress(s, user.id, body.novel_id, body.current_chapter)
     return {"ok": True}
 
@@ -165,6 +166,7 @@ async def flags(
     user: User | None = Depends(current_user_optional),
 ):
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, user)
         limit = _up_to(s, user, novel_id, up_to)
         return [
             _flag_out(f)
@@ -185,4 +187,5 @@ async def resolve(
         )
         if f is None:
             raise HTTPException(404, "flag not found")
+        visible_novel_or_404(s, f.novel_id, admin)
         return _flag_out(f)

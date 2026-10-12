@@ -7,6 +7,7 @@ from ..auth.deps import current_user
 from ..storage.db import get_session
 from ..storage.models import User
 from ..storage.repository import get_novel, remove_shelf, set_shelf, shelf_rows
+from .access import visible_novel_or_404
 from .novels import _novel_out
 from .schemas import LibraryItemOut, LibraryOut, ShelfIn
 
@@ -19,7 +20,7 @@ async def get_library(user: User = Depends(current_user)) -> LibraryOut:
         "reading": [], "plan": [], "completed": [],
     }
     with get_session() as s:
-        for shelf, r, current in shelf_rows(s, user.id):
+        for shelf, r, current in shelf_rows(s, user.id, is_admin=bool(user.is_admin)):
             if shelf not in out:
                 continue
             base = _novel_out(
@@ -38,8 +39,7 @@ async def put_library(
     novel_id: int, body: ShelfIn, user: User = Depends(current_user)
 ) -> dict:
     with get_session() as s:
-        if get_novel(s, novel_id) is None:
-            raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, novel_id, user)
         set_shelf(s, user.id, novel_id, body.shelf)
     return {"ok": True, "novel_id": novel_id, "shelf": body.shelf}
 
@@ -49,5 +49,6 @@ async def delete_library(
     novel_id: int, user: User = Depends(current_user)
 ) -> Response:
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, user)
         remove_shelf(s, user.id, novel_id)
     return Response(status_code=204)

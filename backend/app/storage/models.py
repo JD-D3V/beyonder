@@ -50,6 +50,11 @@ class Base(DeclarativeBase):
 
 class Novel(Base):
     __tablename__ = "novels"
+    __table_args__ = (
+        CheckConstraint(
+            "visibility IN ('public', 'private')", name="ck_novels_visibility"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(512))
@@ -64,6 +69,14 @@ class Novel(Base):
     source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     # Table-of-contents page that new chapters are discovered from.
     source_index_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # "public" books are in the catalog; "private" ones are visible only to
+    # their owner and to admins (everyone else gets a 404).
+    visibility: Mapped[str] = mapped_column(
+        String(16), default="public", server_default="public"
+    )
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -210,6 +210,14 @@ def test_cover_url_is_ssrf_guarded_and_fetches(client, novel_id, monkeypatch):
 
 @pytest.mark.db
 def test_epub_upload_stores_cover(client, db_session, tmp_path):
+    from app.storage.models import User
+
+    u = User(email="up@x.com", password_hash="x", is_admin=True)
+    db_session.add(u)
+    db_session.commit()
+    admin = SimpleNamespace(id=u.id, is_admin=True)
+    app.dependency_overrides[current_user] = lambda: admin
+    app.dependency_overrides[current_user_optional] = lambda: admin
     p = tmp_path / "b.epub"
     _epub(p)
     r = client.post(

@@ -36,6 +36,9 @@ def test_admin_glossary_and_flags_uncapped_without_up_to(client, monkeypatch):
 
     monkeypatch.setattr(reader, "get_session", _fake_session)
     monkeypatch.setattr(reader, "get_progress", lambda s, u, n: 2)
+    monkeypatch.setattr(
+        "app.api.access.get_novel", lambda s, n: SimpleNamespace(visibility="public")
+    )
     seen = {}
 
     def terms(s, nid, up_to_chapter, target_lang):
@@ -308,7 +311,7 @@ def test_progress_post_unknown_novel_404(client, monkeypatch):
     import app.api.reader as reader
 
     monkeypatch.setattr(reader, "get_session", _fake_session)
-    monkeypatch.setattr(reader, "get_novel", lambda s, nid: None)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: None)
 
     def boom(*a, **k):
         raise AssertionError("must not write progress")
@@ -323,7 +326,7 @@ def test_chapter_get_unknown_novel_404(client, monkeypatch):
     import app.api.novels as novels
 
     monkeypatch.setattr(novels, "get_session", _fake_session)
-    monkeypatch.setattr(novels, "get_novel", lambda s, nid: None)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: None)
     monkeypatch.setattr(novels, "get_chapter_by_idx", lambda s, n, i: None)
 
     def boom(*a, **k):

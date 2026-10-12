@@ -26,6 +26,7 @@ def _novel(i):
     return SimpleNamespace(
         id=i, title=f"T{i}", title_en=None, author=None, description=None, tags="",
         status="ongoing", source_lang="zh", source_url=None, updated_at=None,
+        visibility="public",
     )
 
 
