@@ -13,14 +13,17 @@ class NovelOut(BaseModel):
     title: str
     title_en: Optional[str] = None
     author: Optional[str] = None
+    author_en: Optional[str] = None
     description: Optional[str] = None
+    description_en: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     status: str = "ongoing"
     source_lang: str
     source_url: Optional[str] = None
     chapter_count: int = 0
     char_count: int = 0
-    translated_count: int = 0
+    translated_count: int = 0  # chapters with a complete translation (either engine)
+    ai_translated_count: int = 0
     updated_at: Optional[str] = None
     views_total: int = 0
     rating_avg: Optional[float] = None
@@ -64,6 +67,8 @@ class NovelPatch(BaseModel):
     title_en: Optional[str] = Field(default=None, max_length=512)
     author: Optional[str] = Field(default=None, max_length=256)
     description: Optional[str] = None
+    author_en: Optional[str] = Field(default=None, max_length=256)
+    description_en: Optional[str] = None
     tags: Optional[list[str]] = None
     status: Optional[str] = Field(default=None, pattern="^(ongoing|completed|hiatus)$")
     source_lang: Optional[str] = Field(default=None, max_length=8)
@@ -77,7 +82,8 @@ class ChapterOut(BaseModel):
     title: Optional[str] = None
     title_en: Optional[str] = None
     char_count: int = 0
-    translated: bool = False  # complete only
+    translated: bool = False  # complete AI translation only
+    mt: bool = False  # a machine translation exists
     # Set while a resumable translation is mid-flight (pieces done so far).
     pieces_done: Optional[int] = None
 
@@ -90,7 +96,9 @@ class ChapterDetail(BaseModel):
     title_en: Optional[str] = None
     char_count: int = 0
     source_text: str
-    translation: Optional[str] = None
+    translation: Optional[str] = None  # AI only
+    translation_mt: Optional[str] = None  # machine translation
+    title_mt: Optional[str] = None
     translated_with: Optional[str] = None
     critic_passes: Optional[int] = None
     # A full translation exists. False when untranslated, or when a resumable
@@ -203,6 +211,14 @@ class TranslateStepResult(BaseModel):
     # Terms first persisted this call (seed hits and any the model found).
     new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
     title_en: Optional[str] = None
+
+
+class MtStatusOut(BaseModel):
+    """Machine-translation progress for a book (chapters translated / total)."""
+
+    status: Literal["none", "queued", "running", "done", "failed"] = "none"
+    done: int = 0
+    total: int = 0
 
 
 class TitlesTranslateResult(BaseModel):

@@ -121,7 +121,7 @@ def _count_dropped(chapters: list[Chapter], runs: list[list[int]]) -> int:
     n = 0
     for run in runs:
         parts = [by_idx[i] for i in run]
-        per = [{t.target_lang: t for t in c.translations} for c in parts]
+        per = [{(t.target_lang, t.engine): t for t in c.translations} for c in parts]
         for lang in {lang for d in per for lang in d}:
             if not all(_complete(d.get(lang)) for d in per):
                 n += 1
@@ -149,7 +149,7 @@ def merge_novel(
         parts = [by_idx[i] for i in run]
         head, rest = parts[0], parts[1:]
         trs = {
-            c.id: {t.target_lang: t for t in c.translations} for c in parts
+            c.id: {(t.target_lang, t.engine): t for t in c.translations} for c in parts
         }
         langs = {lang for per in trs.values() for lang in per}
         head.source_text = _JOIN.join(c.source_text for c in parts)

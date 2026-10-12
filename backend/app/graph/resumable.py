@@ -284,6 +284,7 @@ async def translate_step(
                     .where(
                         Translation.chapter_id == chap_id,
                         Translation.target_lang == target_lang,
+                        Translation.engine == "ai",
                     )
                     .with_for_update()
                 ).scalar_one_or_none()

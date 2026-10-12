@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # Unset: /mt/status reports unavailable and /mt/translate is a 404.
     libretranslate_url: str = ""
 
+    # Server-side machine translation of every added book.
+    # google_free = Google's unofficial web endpoint (can be rate limited or
+    # blocked); libretranslate uses LIBRETRANSLATE_URL; off disables it.
+    mt_provider: str = "google_free"
+    mt_rps: float = Field(default=1.0, gt=0)
+    # Look for a cover (og:image etc.) when a book is imported from a URL.
+    auto_covers: bool = True
+
     # Backend
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

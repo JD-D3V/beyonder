@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..auth.deps import current_user
 from ..common.logging import get_logger
 from ..ingest import toc_import
+from ..ingest.cover_fetch import extract_cover_url
 from ..ingest.lang import detect_lang
 from ..ingest.scraper import UnsafeURL, fetch_html
 from ..storage.db import get_session
@@ -64,7 +65,11 @@ async def ingest_toc(
         raise HTTPException(
             429, f"At most {toc_import.MAX_RUNNING_PER_USER} imports can run at once."
         )
-    toc_import.start_job(job_id, novel_id, urls)
+    try:
+        cover_url = extract_cover_url(html, body.index_url)
+    except Exception:  # noqa: BLE001 - a cover hint never fails an import
+        cover_url = None
+    toc_import.start_job(job_id, novel_id, urls, cover_url)
     return IngestTocAccepted(job_id=job_id)
 
 

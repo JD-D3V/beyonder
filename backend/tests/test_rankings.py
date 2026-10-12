@@ -24,7 +24,7 @@ def _sql(stmt):
 
 def _novel(i):
     return SimpleNamespace(
-        id=i, title=f"T{i}", title_en=None, author=None, description=None, tags="",
+        id=i, title=f"T{i}", title_en=None, author=None, author_en=None, description=None, description_en=None, tags="",
         status="ongoing", source_lang="zh", source_url=None, updated_at=None,
         visibility="public",
     )

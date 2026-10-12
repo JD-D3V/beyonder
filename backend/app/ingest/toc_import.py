@@ -116,17 +116,23 @@ def _set(job_id: int, **fields) -> None:
                 setattr(job, k, v)
 
 
-def start_job(job_id: int, novel_id: int, urls: list[str]) -> None:
-    task = asyncio.create_task(run_job(job_id, novel_id, urls))
+def start_job(
+    job_id: int, novel_id: int, urls: list[str], cover_url: str | None = None
+) -> None:
+    task = asyncio.create_task(run_job(job_id, novel_id, urls, cover_url))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
 
-async def run_job(job_id: int, novel_id: int, urls: list[str]) -> None:
+async def run_job(
+    job_id: int, novel_id: int, urls: list[str], cover_url: str | None = None
+) -> None:
     """Run one import; always leaves the job in a terminal status."""
     try:
         async with _semaphore():
-            await asyncio.wait_for(_run(job_id, novel_id, urls), JOB_TIMEOUT_S)
+            await asyncio.wait_for(
+                _run(job_id, novel_id, urls, cover_url), JOB_TIMEOUT_S
+            )
     except asyncio.TimeoutError:
         log.error("toc_import.timeout", job_id=job_id)
         _set(job_id, status="failed", error="The import took too long and was stopped.")
@@ -144,9 +150,12 @@ async def run_job(job_id: int, novel_id: int, urls: list[str]) -> None:
             log.error("toc_import.finalize_failed", job_id=job_id, err=str(e))
 
 
-async def _run(job_id: int, novel_id: int, urls: list[str]) -> None:
+async def _run(
+    job_id: int, novel_id: int, urls: list[str], cover_url: str | None = None
+) -> None:
     _set(job_id, status="running", boot_id=BOOT_ID)
     added = 0
+    page_cover: str | None = None
     for i, url in enumerate(urls):
         if i and REQUEST_DELAY:
             await asyncio.sleep(REQUEST_DELAY)
@@ -162,6 +171,7 @@ async def _run(job_id: int, novel_id: int, urls: list[str]) -> None:
                     source_text=page.text, source_url=page.url[:1024],
                 )
             added += 1
+            page_cover = page_cover or page.cover_url
         _set(job_id, done=i + 1)
     if added == 0:
         _set(job_id, status="failed", error="No chapter text could be fetched.")
@@ -180,6 +190,16 @@ async def _run(job_id: int, novel_id: int, urls: list[str]) -> None:
         log.error("toc_import.embed_failed", novel_id=novel_id, err=str(e))
         warning = EMBED_WARNING
     _set(job_id, status="done", error=warning)
+    _after_import(novel_id, [cover_url, page_cover])
+
+
+def _after_import(novel_id: int, cover_candidates: list[str | None]) -> None:
+    """Machine translation and a cover, both background and best effort."""
+    from ..mt import job as mt_job
+    from .cover_fetch import spawn_auto_cover
+
+    mt_job.enqueue(novel_id)
+    spawn_auto_cover(novel_id, image_urls=cover_candidates)
 
 
 def create_job_and_novel(

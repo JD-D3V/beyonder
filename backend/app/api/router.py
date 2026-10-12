@@ -11,6 +11,7 @@ from ..common.config import settings
 from .imports import router as imports_router
 from .library import router as library_router
 from .mt import router as mt_router
+from .novel_mt import router as novel_mt_router
 from .novels import router as novels_router
 from .reader import router as reader_router
 from .social import router as social_router
@@ -24,6 +25,7 @@ router.include_router(reader_router)
 router.include_router(library_router)
 router.include_router(social_router)
 router.include_router(mt_router)
+router.include_router(novel_mt_router)
 
 
 

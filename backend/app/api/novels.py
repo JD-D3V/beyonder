@@ -15,6 +15,7 @@ from ..agents.translator import translate_title, translate_titles_batch
 from ..auth.deps import current_user, current_user_optional, require_admin
 from ..common.logging import get_logger
 from ..embed.pipeline import embed_chapters
+from ..ingest.cover_fetch import spawn_auto_cover
 from ..ingest.covers import CoverError, MAX_UPLOAD_BYTES as MAX_COVER_BYTES, process_cover
 from ..ingest.epub_loader import load_epub_with_cover
 from ..ingest.lang import detect_lang
@@ -26,6 +27,7 @@ from ..ingest.updates import (
 )
 from ..ingest.txt_loader import load_txt
 from ..llm.resolve import resolve_llm
+from ..mt import job as mt_job
 from ..storage.db import get_session
 from ..storage.models import Novel, Translation, User
 from ..storage.repository import (
@@ -94,6 +96,7 @@ def _join_tags(tags: list[str] | None) -> str | None:
 def _novel_out(
     novel: Novel, chapters: int, chars: int, translated: int, views_total: int = 0,
     rating_avg: float | None = None, rating_count: int = 0,
+    ai_translated: int = 0,
 ) -> NovelOut:
     cover_at = getattr(novel, "cover_updated_at", None)
     return NovelOut(
@@ -101,7 +104,9 @@ def _novel_out(
         title=novel.title,
         title_en=novel.title_en,
         author=novel.author,
+        author_en=novel.author_en,
         description=novel.description,
+        description_en=novel.description_en,
         tags=_split_tags(novel.tags),
         status=novel.status,
         source_lang=novel.source_lang,
@@ -109,6 +114,7 @@ def _novel_out(
         chapter_count=chapters,
         char_count=chars,
         translated_count=translated,
+        ai_translated_count=ai_translated,
         views_total=views_total,
         updated_at=novel.updated_at.isoformat() if novel.updated_at else None,
         rating_avg=round(rating_avg, 2) if rating_avg is not None else None,
@@ -146,7 +152,7 @@ async def list_novels_route(
         return [
             _novel_out(
                 r.novel, r.chapter_count, r.char_count, r.translated_count,
-                r.views_total, r.rating_avg, r.rating_count,
+                r.views_total, r.rating_avg, r.rating_count, r.ai_translated_count,
             )
             for r in library_rows(s, params)
         ]
@@ -164,7 +170,7 @@ async def rankings_route(
             RankedNovelOut(
                 **_novel_out(
                     r.novel, r.chapter_count, r.char_count, r.translated_count,
-                    r.views_total, r.rating_avg, r.rating_count,
+                    r.views_total, r.rating_avg, r.rating_count, r.ai_translated_count,
                 ).model_dump(),
                 views=views,
                 rank=i,
@@ -183,7 +189,7 @@ def _novel_detail(s, novel_id: int) -> NovelOut:
     r = rows[0]
     return _novel_out(
         r.novel, r.chapter_count, r.char_count, r.translated_count,
-        r.views_total, r.rating_avg, r.rating_count,
+        r.views_total, r.rating_avg, r.rating_count, r.ai_translated_count,
     )
 
 
@@ -208,7 +214,9 @@ async def patch_novel_route(
             title=body.title,
             title_en=body.title_en,
             author=body.author,
+            author_en=body.author_en,
             description=body.description,
+            description_en=body.description_en,
             tags=_join_tags(body.tags),
             status=body.status,
             source_lang=body.source_lang,
@@ -370,6 +378,7 @@ async def list_chapters_route(
                 title_en=r.title_en,
                 char_count=r.char_count,
                 translated=r.translated,
+                mt=r.mt,
                 pieces_done=r.pieces_done,
             )
             for r in chapter_rows(s, novel_id, target_lang=target_lang)
@@ -398,6 +407,9 @@ async def get_chapter_route(
         if novel.visibility == "public":  # private reads are not counted
             track_chapter_view(s, request, user, novel_id)
         tr = get_translation(s, chapter_id=chap.id, target_lang=target_lang)
+        mt_tr = get_translation(
+            s, chapter_id=chap.id, target_lang=target_lang, engine="mt"
+        )
         return ChapterDetail(
             idx=chap.idx,
             title=chap.title,
@@ -405,6 +417,8 @@ async def get_chapter_route(
             char_count=chap.char_count,
             source_text=chap.source_text,
             translation=tr.text if tr else None,
+            translation_mt=mt_tr.text if mt_tr and mt_tr.text else None,
+            title_mt=mt_tr.title if mt_tr else None,
             translated_with=tr.model if tr else None,
             critic_passes=tr.critic_passes if tr else None,
             complete=tr is not None and tr.pieces_done is None,
@@ -523,7 +537,9 @@ def _persist_novel(
             )
             n += 1
         log.info("novel.saved", novel_id=novel.id, chapters=n, lang=lang)
-        return IngestResult(novel_id=novel.id, chapters_added=n, title=title)
+        result = IngestResult(novel_id=novel.id, chapters_added=n, title=title)
+    mt_job.enqueue(result.novel_id)  # after commit; never fails the import
+    return result
 
 
 @router.post("/novels/ingest/text", response_model=IngestResult)
@@ -676,7 +692,15 @@ async def ingest_url(
                 source_url=url,
             )
             n += 1
-        return IngestResult(novel_id=novel.id, chapters_added=n)
+        novel_id = novel.id
+    # Best effort and in the background: neither may fail the import.
+    mt_job.enqueue(novel_id)
+    spawn_auto_cover(
+        novel_id,
+        page_urls=[body.index_url] if body.index_url else [],
+        image_urls=[p.cover_url for p in pages if p.text.strip()][:1],
+    )
+    return IngestResult(novel_id=novel_id, chapters_added=n)
 
 
 @router.post("/novels/{novel_id}/check-updates", response_model=UpdateCheckResult)
