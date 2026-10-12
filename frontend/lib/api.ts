@@ -143,14 +143,17 @@ export interface Novel {
   title: string;
   title_en?: string | null;
   author: string | null;
+  author_en?: string | null;
   description: string | null;
+  description_en?: string | null;
   tags: string[];
   status: string;
   source_lang: string;
   source_url: string | null;
   chapter_count: number;
   char_count: number;
-  translated_count: number;
+  translated_count: number; // chapters with a machine or AI translation
+  ai_translated_count?: number;
   updated_at: string | null;
   // Private books are visible only to their owner and admins.
   visibility?: Visibility;
@@ -163,7 +166,8 @@ export interface ChapterRow {
   title: string | null;
   title_en?: string | null;
   char_count: number;
-  translated: boolean; // complete only
+  translated: boolean; // complete AI translation only
+  mt?: boolean; // a machine (Google) translation exists
   pieces_done: number | null; // set while a resumable translation is mid-flight
 }
 
@@ -173,7 +177,9 @@ export interface ChapterDetail {
   title_en?: string | null;
   char_count: number;
   source_text: string;
-  translation: string | null;
+  translation: string | null; // AI only
+  translation_mt?: string | null; // machine (Google) translation
+  title_mt?: string | null;
   translated_with: string | null;
   critic_passes: number | null;
   complete: boolean; // a full translation exists
@@ -506,3 +512,6 @@ export const api = {
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   me: () => req<AuthUser>("/auth/me"),
 };
+
+// Same as displayTitle, for author names: English first, original on hover.
+export const displayAuthor = displayTitle;

@@ -16,6 +16,7 @@ export interface RankedNovel extends SiteStats {
   title: string;
   title_en?: string | null;
   author: string | null;
+  author_en?: string | null;
   views: number;
   rank: number;
 }
@@ -49,7 +50,16 @@ export interface ImportJob {
   updated_at: string;
 }
 
+export interface MtStatus {
+  status: "none" | "queued" | "running" | "done" | "failed" | "off" | string;
+  done: number;
+  total: number;
+}
+
 export const siteApi = {
+  mtStatus: (novelId: number) => req<MtStatus>(`/novels/${novelId}/mt`),
+  rerunMt: (novelId: number) =>
+    req<MtStatus>(`/novels/${novelId}/mt`, { method: "POST" }),
   ingestToc: (body: {
     index_url: string;
     title?: string;
