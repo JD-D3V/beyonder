@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { IconChevronLeft, IconFileText, IconLink, IconUpload } from "../../components/icons";
 import { api, errorText, type Visibility } from "../../lib/api";
+import { siteApi } from "../../lib/api-site";
 import { getSession, SESSION_EVENT } from "../../lib/session";
 
-type Mode = "file" | "paste" | "url";
+type Mode = "file" | "paste" | "url" | "toc";
 
 export default function ImportPage() {
   const router = useRouter();
@@ -44,6 +45,9 @@ export default function ImportPage() {
   const [dragOver, setDragOver] = useState(false);
   const [text, setText] = useState("");
   const [urls, setUrls] = useState("");
+  const [tocUrl, setTocUrl] = useState("");
+  const [maxChapters, setMaxChapters] = useState(200);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   function pick(f: File | null) {
@@ -67,7 +71,28 @@ export default function ImportPage() {
         .filter(Boolean);
 
       let novelId: number;
-      if (mode === "file") {
+      if (mode === "toc") {
+        const link = tocUrl.trim();
+        if (!link) throw new Error("Add the table-of-contents URL.");
+        const { job_id } = await siteApi.ingestToc({
+          index_url: link,
+          title: title.trim() || undefined,
+          max_chapters: Math.min(500, Math.max(1, Math.round(maxChapters) || 200)),
+          visibility: chosen,
+        });
+        setProgress({ done: 0, total: 0 });
+        // Poll until the server has fetched every chapter.
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const job = await siteApi.importJob(job_id);
+          setProgress({ done: job.done, total: job.total });
+          if (job.status === "failed") throw new Error(job.error || "The import failed.");
+          if (job.status === "done" && job.novel_id != null) {
+            novelId = job.novel_id;
+            break;
+          }
+        }
+      } else if (mode === "file") {
         if (!file) throw new Error("Choose a .txt, .md or .epub file first.");
         const res = await api.uploadFile(file, {
           title: title.trim() || undefined,
@@ -112,6 +137,7 @@ export default function ImportPage() {
       setErr(errorText(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -150,6 +176,12 @@ export default function ImportPage() {
           onClick={() => setMode("url")}
         >
           <IconLink /> <span>From URLs</span>
+        </button>
+        <button
+          className={`tab ${mode === "toc" ? "active" : ""}`}
+          onClick={() => setMode("toc")}
+        >
+          <IconLink /> <span>Table of contents URL</span>
         </button>
       </div>
 
@@ -222,6 +254,50 @@ export default function ImportPage() {
               build their text in the browser come back empty. Personal use only.
             </div>
           </div>
+        )}
+
+        {mode === "toc" && (
+          <>
+            <div className="field">
+              <label>Table of contents URL</label>
+              <input
+                type="url"
+                placeholder="https://example.com/book/123/"
+                value={tocUrl}
+                onChange={(e) => setTocUrl(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label>Maximum chapters (1 to 500)</label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={maxChapters}
+                onChange={(e) => setMaxChapters(Number(e.target.value))}
+              />
+              <div className="small muted">
+                The server follows the chapter links on that page in order and
+                fetches one chapter per second, so a long book takes a while. Keep
+                this page open to see progress, or come back later; the import
+                continues on the server. Personal use only.
+              </div>
+            </div>
+            {progress && (
+              <div className="field">
+                <progress
+                  value={progress.done}
+                  max={Math.max(progress.total, 1)}
+                  style={{ width: "100%" }}
+                />
+                <div className="small muted">
+                  {progress.total
+                    ? `Fetched ${progress.done} of ${progress.total} chapters`
+                    : "Starting..."}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 

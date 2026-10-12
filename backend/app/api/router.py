@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ..common.config import settings
+from .imports import router as imports_router
 from .library import router as library_router
 from .mt import router as mt_router
 from .novels import router as novels_router
@@ -17,6 +18,7 @@ from .translate import router as translate_router
 
 router = APIRouter()
 router.include_router(novels_router)
+router.include_router(imports_router)
 router.include_router(translate_router)
 router.include_router(reader_router)
 router.include_router(library_router)

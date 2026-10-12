@@ -31,7 +31,7 @@ def world(db_session):
     """A private book owned by ``owner`` with a chapter, term, flag, review,
     comment and cover, plus the users who might poke at it."""
     from app.storage.models import (
-        Chapter, Comment, Novel, Review, ReviewFlag, Term, User,
+        Chapter, Comment, ImportJob, Novel, Review, ReviewFlag, Term, User,
     )
     from app.storage.repository import set_cover
 
@@ -60,13 +60,14 @@ def world(db_session):
     review = Review(novel_id=novel.id, user_id=users["other"].id, rating=4, body="hm")
     comment = Comment(novel_id=novel.id, chapter_idx=0,
                       user_id=users["owner"].id, body="note to self")
-    s.add_all([term, flag, review, comment])
+    job = ImportJob(user_id=users["owner"].id, novel_id=novel.id, status="done")
+    s.add_all([term, flag, review, comment, job])
     s.flush()
     set_cover(s, novel.id, data=b"abc", width=1, height=2)
     s.commit()
     return SimpleNamespace(
         s=s, novel=novel.id, term=term.id, flag=flag.id, review=review.id,
-        comment=comment.id,
+        comment=comment.id, job=job.id,
         users={k: SimpleNamespace(id=u.id, email=u.email, is_admin=u.is_admin,
                                   display_name=None)
                for k, u in users.items()},
@@ -177,6 +178,7 @@ ROUTES = [
     R("POST", "/novels/{n}/chapters/0/comments", json={"body": "hi"}, ok=(403,)),
     R("DELETE", "/comments/{c}", ok=(204,)),
     R("POST", "/reports", json={"kind": "comment", "target_id": "{c}"}),
+    R("GET", "/imports/{j}"),
     R("PUT", "/library/{n}", json={"shelf": "plan"}),
     R("DELETE", "/library/{n}", ok=(204,)),
     # Last: it deletes the book.
@@ -187,7 +189,7 @@ for i, r in enumerate(ROUTES):
 
 
 def _fill(v, w):
-    ids = dict(n=w.novel, t=w.term, f=w.flag, r=w.review, c=w.comment)
+    ids = dict(n=w.novel, t=w.term, f=w.flag, r=w.review, c=w.comment, j=w.job)
     if isinstance(v, str):
         if v.startswith("{") and v.endswith("}") and v[1:-1] in ids:
             return ids[v[1:-1]]
@@ -240,20 +242,23 @@ def test_every_novel_id_route_is_in_the_matrix():
     covered = set()
     for r in ROUTES:
         covered.add((r.method, re.sub(r"\?.*", "", r.path)))
+    # Takes no existing novel (it creates one); its rules live in test_toc_import.py.
+    covered.add(("POST", "/novels/ingest/toc"))
     missing = []
     for route in app.routes:
         path = getattr(route, "path", "")
         if not (
             "{novel_id}" in path or "{comment_id}" in path
-            or "{review_id}" in path or "{flag_id}" in path
+            or "{review_id}" in path or "{flag_id}" in path or "{job_id}" in path
             or path in {"/ask", "/progress", "/translate", "/translate/batch",
-                        "/translate/step", "/novels/embed", "/reports"}
+                        "/translate/step", "/novels/embed", "/reports",
+                        "/novels/ingest/toc"}
         ):
             continue
         norm = (
             path.replace("{novel_id}", "{n}").replace("{term_id}", "{t}")
             .replace("{flag_id}", "{f}").replace("{review_id}", "{r}")
-            .replace("{comment_id}", "{c}").replace("{idx}", "0")
+            .replace("{comment_id}", "{c}").replace("{job_id}", "{j}").replace("{idx}", "0")
         )
         for m in route.methods - {"HEAD", "OPTIONS"}:
             if (m, norm) not in covered:
