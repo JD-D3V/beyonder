@@ -6,7 +6,7 @@ COMPOSE := docker compose -f docker-compose.yml
 VENV    := backend/.venv
 PY      := $(VENV)/bin/python
 
-.PHONY: up migrate backend frontend frontend-build test admin reembed merge-parts down doctor venv env
+.PHONY: up migrate backend frontend frontend-build test admin reembed merge-parts seed-classics check-updates down doctor venv env
 
 env:
 	@test -f .env || { echo ".env missing - copying from .env.example"; cp .env.example .env; \
@@ -50,6 +50,14 @@ reembed: env venv
 # make merge-parts ARGS="--dry-run" (or ARGS="--novel 3")
 merge-parts: env venv
 	cd backend && .venv/bin/python -m app.scripts.merge_parts $(ARGS)
+
+# Public-domain classics from Wikisource. make seed-classics ARGS="--works xiyouji --max-chapters 5"
+seed-classics: env venv
+	cd backend && .venv/bin/python -m app.scripts.seed_classics $(ARGS)
+
+# Look for new chapters on URL-imported books (for system cron).
+check-updates: env venv
+	cd backend && .venv/bin/python -m app.scripts.check_updates $(ARGS)
 
 down:
 	$(COMPOSE) down
