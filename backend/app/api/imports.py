@@ -31,11 +31,6 @@ async def ingest_toc(
     body: IngestTocIn, user: User = Depends(current_user)
 ) -> IngestTocAccepted:
     vis = _import_visibility(user, body.visibility)
-    with get_session() as s:
-        if toc_import.active_jobs(s, user.id) >= toc_import.MAX_RUNNING_PER_USER:
-            raise HTTPException(
-                429, f"At most {toc_import.MAX_RUNNING_PER_USER} imports can run at once."
-            )
     try:
         html = await fetch_html(body.index_url)
     except UnsafeURL as e:
@@ -59,10 +54,16 @@ async def ingest_toc(
         title = soup.title.string.strip()
     title = (title or "Untitled import")[:512]
     lang = detect_lang(soup.get_text(" ", strip=True)) or "zh"
-    job_id, novel_id = toc_import.create_job_and_novel(
-        user_id=user.id, title=title, lang=lang, index_url=body.index_url,
-        visibility=vis, total=len(urls),
-    )
+    try:
+        # Cap check + insert are one locked transaction (after the slow fetch).
+        job_id, novel_id = toc_import.create_job_and_novel(
+            user_id=user.id, title=title, lang=lang, index_url=body.index_url,
+            visibility=vis, total=len(urls),
+        )
+    except toc_import.TooManyJobs:
+        raise HTTPException(
+            429, f"At most {toc_import.MAX_RUNNING_PER_USER} imports can run at once."
+        )
     toc_import.start_job(job_id, novel_id, urls)
     return IngestTocAccepted(job_id=job_id)
 

@@ -134,6 +134,12 @@ _DROP_SELECTORS = [
 ]
 
 
+_JUNK_SELECTORS = [
+    "style", "script", "noscript", ".variant-tooltip", ".mw-editsection",
+    "sup.reference", ".reference", ".mw-references-wrap", "ol.references",
+]
+
+
 def _header_title(soup: BeautifulSoup, fallback: str) -> str:
     """Chapter heading from the Wikisource header template: the lines between
     the book name (bold) and the author credit."""
@@ -167,6 +173,10 @@ def html_to_chapter(html: str, fallback: str = "") -> tuple[str, str]:
     """(title, plain-text paragraphs) from a parsed Wikisource page. Footnotes,
     navigation and templates are dropped; poem lines stay one per line."""
     soup = BeautifulSoup(html, "lxml")
+    # Inline CSS/JS and variant tooltips ("一作「…」") must not leak into text.
+    for sel in _JUNK_SELECTORS:
+        for el in soup.select(sel):
+            el.decompose()
     title = _header_title(soup, fallback)
     for sel in _DROP_SELECTORS:
         for el in soup.select(sel):
@@ -198,4 +208,4 @@ def html_to_chapter(html: str, fallback: str = "") -> tuple[str, str]:
     if paras and _HEADING_RE.match(title.replace(" ", "")) and paras[0].startswith("第") \
             and len(paras[0]) < 60 and "\n" not in paras[0]:
         title = re.sub(r"[\s\u3000]+", " ", paras.pop(0))
-    return title, "\n\n".join(paras)
+    return title[:512], "\n\n".join(paras)

@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: beyonder
       POSTGRES_DB: beyonder
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -26,8 +26,8 @@ services:
     container_name: beyonder-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - ./data/qdrant:/qdrant/storage
     environment:
@@ -69,7 +69,7 @@ services:
     container_name: beyonder-libretranslate
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     environment:
       LT_LOAD_ONLY: zh,en
       LT_DISABLE_WEB_UI: "true"

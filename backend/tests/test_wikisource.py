@@ -157,3 +157,21 @@ def test_work_config_is_well_formed():
     for w in WORKS.values():
         assert isinstance(w, Work) and w.title and w.author and w.toc_page
         assert re.compile(w.link_re)
+
+
+def test_inline_style_and_variant_tooltips_are_dropped():
+    from app.ingest.wikisource import html_to_chapter
+
+    css = ".mw-parser-output .variant-text{display:inline}" * 40
+    html = (
+        '<div class="mw-parser-output"><style>' + css + "</style>"
+        "<table><tr><td><b>西遊記</b><br/>第十二回<br/>"
+        '玄奘秉誠建大會<span class="variant-tooltip">一作「觀音顯象」</span>'
+        '<style>' + css + '</style><span>作者：吳承恩</span></td></tr></table>'
+        "<p>正文第一段。<style>.x{color:red}</style><script>alert(1)</script></p></div>"
+    )
+    title, body = html_to_chapter(html, fallback="fb")
+    assert title == "第十二回 玄奘秉誠建大會"
+    assert body == "正文第一段。"
+    long_title, _ = html_to_chapter("<p>x</p>", fallback="長" * 600)
+    assert len(long_title) == 512

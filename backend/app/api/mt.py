@@ -31,6 +31,7 @@ def reset_throttles() -> None:
 
 class TranslateIn(BaseModel):
     texts: list[str] = Field(min_length=1, max_length=MAX_TEXTS)
+    source: str = "zh"
 
 
 class TranslateOut(BaseModel):
@@ -44,6 +45,8 @@ async def mt_status() -> dict:
 
 @router.post("/translate", response_model=TranslateOut)
 async def mt_translate(body: TranslateIn, request: Request) -> TranslateOut:
+    if not body.source.lower().startswith("zh"):
+        raise HTTPException(400, "free translation supports Chinese books only")
     base = settings.libretranslate_url.rstrip("/")
     if not base:
         raise HTTPException(404, "server translation is not configured")

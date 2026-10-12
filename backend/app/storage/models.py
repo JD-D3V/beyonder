@@ -302,6 +302,8 @@ class ImportJob(Base):
     total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     done: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Per-process boot id of the worker that owns the job (see toc_import.BOOT_ID).
+    boot_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

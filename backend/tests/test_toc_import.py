@@ -218,13 +218,200 @@ def test_job_access_and_listing(client, world, db_session):
 
 
 @pytest.mark.db
-def test_running_jobs_fail_at_startup(db_session, world):
+def test_only_stale_foreign_boot_jobs_fail_at_startup(db_session, world):
+    from datetime import datetime, timedelta, timezone
+
     from app.storage.models import ImportJob
 
-    a = ImportJob(user_id=world["user"].id, status="running")
-    b = ImportJob(user_id=world["user"].id, status="done")
-    db_session.add_all([a, b])
+    old = datetime.now(timezone.utc) - timedelta(minutes=30)
+    uid = world["user"].id
+    stale = ImportJob(user_id=uid, status="running", boot_id="other", updated_at=old)
+    legacy = ImportJob(user_id=uid, status="queued", boot_id=None, updated_at=old)
+    fresh = ImportJob(user_id=uid, status="running", boot_id="other")
+    mine = ImportJob(user_id=uid, status="running", boot_id=toc_import.BOOT_ID, updated_at=old)
+    done = ImportJob(user_id=uid, status="done", boot_id="other", updated_at=old)
+    db_session.add_all([stale, legacy, fresh, mine, done])
     db_session.commit()
-    assert toc_import.mark_interrupted_jobs() == 1
+    assert toc_import.mark_interrupted_jobs() == 2
     db_session.expire_all()
-    assert (a.status, a.error, b.status) == ("failed", "server restarted", "done")
+    assert (stale.status, stale.error) == ("failed", "server restarted")
+    assert legacy.status == "failed"
+    assert (fresh.status, mine.status, done.status) == ("running", "running", "done")
+
+
+@pytest.mark.db
+def test_per_user_cap_is_race_free(db_session, world):
+    import threading
+
+    results = []
+
+    def go(n):
+        try:
+            toc_import.create_job_and_novel(
+                user_id=world["user"].id, title=f"B{n}", lang="zh",
+                index_url="https://x.example/", visibility="private", total=1,
+            )
+            results.append("ok")
+        except toc_import.TooManyJobs:
+            results.append("429")
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results) == ["429"] * 6 + ["ok"] * 2
+
+
+@pytest.mark.db
+def test_jobs_run_at_most_two_at_a_time(db_session, world, monkeypatch):
+    import asyncio
+
+    from app.storage.models import ImportJob
+
+    state = {"now": 0, "max": 0}
+
+    async def slow_scrape(url):
+        state["now"] += 1
+        state["max"] = max(state["max"], state["now"])
+        await asyncio.sleep(0.05)
+        state["now"] -= 1
+        return ScrapedPage(url=url, title="t", text="正文")
+
+    async def no_embed(novel_id, chaps):
+        return 0
+
+    monkeypatch.setattr(toc_import, "scrape_url", slow_scrape)
+    monkeypatch.setattr(toc_import, "embed_chapters", no_embed)
+    monkeypatch.setattr(toc_import, "REQUEST_DELAY", 0)
+    jobs = []
+    for name in ("user", "other", "admin"):
+        for _ in range(2):
+            jobs.append(toc_import.create_job_and_novel(
+                user_id=world[name].id, title=name, lang="zh",
+                index_url="https://x.example/", visibility="private", total=1,
+            ) if name != "admin" else (None, None))
+    jobs = [j for j in jobs if j[0]]
+
+    async def main():
+        await asyncio.gather(*[
+            toc_import.run_job(j, n, [f"https://x.example/{j}.html"]) for j, n in jobs
+        ])
+
+    asyncio.run(main())
+    assert state["max"] == 2
+    db_session.expire_all()
+    assert {db_session.get(ImportJob, j).status for j, _ in jobs} == {"done"}
+
+
+@pytest.mark.db
+def test_failure_stores_generic_error_and_terminal_status(db_session, world, monkeypatch):
+    import asyncio
+
+    from app.storage.models import ImportJob
+
+    def make():
+        return toc_import.create_job_and_novel(
+            user_id=world["user"].id, title="t", lang="zh",
+            index_url="https://x.example/", visibility="private", total=1,
+        )
+
+    j1, n1 = make()
+    ok = ScrapedPage(url="https://x.example/1", title="t", text="正文")
+
+    async def fine(url):
+        return ok
+
+    async def bad_embed(novel_id, chaps):
+        raise RuntimeError("qdrant at 10.0.0.9 refused secret-token")
+
+    monkeypatch.setattr(toc_import, "scrape_url", fine)
+    monkeypatch.setattr(toc_import, "embed_chapters", bad_embed)
+    monkeypatch.setattr(toc_import, "REQUEST_DELAY", 0)
+    asyncio.run(toc_import.run_job(j1, n1, ["https://x.example/1"]))
+    db_session.expire_all()
+    job = db_session.get(ImportJob, j1)
+    assert job.status == "done" and job.error == toc_import.EMBED_WARNING
+
+    # Unexpected crash inside the job: generic message, never the exception text.
+    db_session.query(ImportJob).delete()
+    db_session.commit()
+    j2, n2 = make()
+
+    def boom(*a, **k):
+        raise RuntimeError("db password=hunter2")
+
+    monkeypatch.setattr(toc_import, "insert_chapter", boom)
+    asyncio.run(toc_import.run_job(j2, n2, ["https://x.example/1"]))
+    db_session.expire_all()
+    job = db_session.get(ImportJob, j2)
+    assert job.status == "failed" and job.error == toc_import.GENERIC_ERROR
+    assert "hunter2" not in job.error
+
+
+@pytest.mark.db
+def test_timeout_marks_job_failed(db_session, world, monkeypatch):
+    import asyncio
+
+    from app.storage.models import ImportJob
+
+    jid, nid = toc_import.create_job_and_novel(
+        user_id=world["user"].id, title="t", lang="zh",
+        index_url="https://x.example/", visibility="private", total=1,
+    )
+
+    async def hang(url):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(toc_import, "scrape_url", hang)
+    monkeypatch.setattr(toc_import, "JOB_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(toc_import, "REQUEST_DELAY", 0)
+    asyncio.run(toc_import.run_job(jid, nid, ["https://x.example/1"]))
+    db_session.expire_all()
+    assert db_session.get(ImportJob, jid).status == "failed"
+
+
+@pytest.mark.db
+def test_only_one_process_holds_the_update_leader_lock(db_session):
+    from app.ingest.auto_update import release_leader, try_acquire_leader
+
+    first = try_acquire_leader(991)
+    assert first is not None
+    assert try_acquire_leader(991) is None
+    release_leader(first, 991)
+    again = try_acquire_leader(991)
+    assert again is not None
+    release_leader(again, 991)
+
+
+@pytest.mark.db
+def test_seed_skip_only_matches_public_ownerless(db_session, world):
+    import asyncio
+
+    from app.scripts import seed_classics
+    from app.ingest.wikisource import WORKS
+    from app.storage.models import Novel
+
+    work = list(WORKS.values())[0]
+
+    class NoPages:
+        async def chapter_pages(self, w):
+            return []
+
+    # A private book by a user with the same title must not block the seed.
+    db_session.add(Novel(title=work.title, source_lang="zh", visibility="private",
+                         owner_id=world["user"].id))
+    db_session.commit()
+    seen = asyncio.run(seed_classics.seed_work(NoPages(), work, 5))
+    assert seen is None  # got past the skip check to "no chapter pages found"
+
+    db_session.add(Novel(title=work.title, source_lang="zh", visibility="public",
+                         owner_id=None))
+    db_session.commit()
+    calls = []
+
+    class Spy:
+        async def chapter_pages(self, w):
+            calls.append(1)
+            return []
+
+    asyncio.run(seed_classics.seed_work(Spy(), work, 5))
+    assert calls == []  # skipped: public ownerless copy exists

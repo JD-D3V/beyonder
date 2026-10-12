@@ -65,3 +65,11 @@ def test_rate_limited(client, monkeypatch):
         client.post("/mt/translate", json={"texts": ["a"]}).status_code for _ in range(61)
     ]
     assert codes[:60] == [200] * 60 and codes[60] == 429
+
+
+def test_non_chinese_source_rejected(client, monkeypatch):
+    called = []
+    _upstream(monkeypatch, lambda r: called.append(1) or httpx.Response(200, json={"translatedText": ["x"]}))
+    r = client.post("/mt/translate", json={"texts": ["bonjour"], "source": "fr"})
+    assert r.status_code == 400 and not called
+    assert client.post("/mt/translate", json={"texts": ["你"], "source": "zh-TW"}).status_code == 200

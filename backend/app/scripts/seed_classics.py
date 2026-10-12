@@ -24,7 +24,11 @@ log = get_logger(__name__)
 async def seed_work(client: WikisourceClient, work: Work, max_chapters: int) -> int | None:
     """Create one novel; returns its id, or None when it already exists."""
     with get_session() as s:
-        if s.scalar(select(Novel.id).where(Novel.title == work.title)) is not None:
+        if s.scalar(select(Novel.id).where(
+                Novel.title == work.title,
+                Novel.visibility == "public",
+                Novel.owner_id.is_(None),
+            )) is not None:
             print(f"{work.title}: already present, skipped")
             return None
     pages = (await client.chapter_pages(work))[:max_chapters]

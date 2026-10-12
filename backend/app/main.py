@@ -18,7 +18,7 @@ from .api.router import router
 from .common.config import settings
 from .common.logging import get_logger
 from .ingest.auto_update import update_loop
-from .ingest.toc_import import mark_interrupted_jobs
+from .ingest.toc_import import mark_interrupted_jobs, sweep_loop
 from .llm.client import LLMError
 from .storage.db import init_engine
 
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
                 log.warning("startup.import_jobs_interrupted", count=n)
         except Exception as e:  # noqa: BLE001 - e.g. migrations not applied yet
             log.warning("startup.import_jobs_check_failed", err=str(e))
+        app.state.import_sweep = asyncio.create_task(sweep_loop())
         if settings.auto_update_hours > 0:
             app.state.auto_update = asyncio.create_task(
                 update_loop(settings.auto_update_hours)
