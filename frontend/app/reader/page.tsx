@@ -40,6 +40,7 @@ import {
   KeyRequiredError,
   Novel,
 } from "../../lib/api";
+import { siteApi, type MtStatus } from "../../lib/api-site";
 import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
 import {
   DEFAULT_PREFS,
@@ -60,7 +61,8 @@ import {
 
 // ai: the saved AI translation. web: free machine translation done in this
 // browser (never saved). both: source beside whichever translation is shown.
-type View = "ai" | "web" | "source" | "both";
+type View = "google" | "gemini" | "source" | "both";
+const VIEW_KEY = "beyonder.reader.view";
 
 // Free web translation of one chapter, kept in memory only.
 interface WebState {
@@ -155,9 +157,10 @@ function ReaderInner() {
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
   const [flagCount, setFlagCount] = useState(0);
   const [onReading, setOnReading] = useState(false);
-  const [view, setView] = useState<View>("ai");
+  const [view, setView] = useState<View>("google");
   // Which translation "Both" sits beside.
-  const [lastTrans, setLastTrans] = useState<"ai" | "web">("ai");
+  const [lastTrans, setLastTrans] = useState<"gemini" | "google">("gemini");
+  const [mt, setMt] = useState<MtStatus | null>(null);
   const [webModeRaw, setWebMode] = useState<WebMode | null | undefined>(undefined);
   const [packNote, setPackNote] = useState<string | null>(null);
   // Free translation covers Chinese books only.
@@ -236,10 +239,6 @@ function ReaderInner() {
         const c = await api.getChapter(novelId, chapterIdx);
         if (!isCurrent()) return;
         setChapter(c);
-        // No AI translation yet: open the free web translation instead.
-        const v = c.translation ? "ai" : isZhRef.current ? "web" : "source";
-        setView(v);
-        setLastTrans(v === "source" ? "ai" : v);
         return c;
       } catch (e) {
         if (!isCurrent()) return;
@@ -279,28 +278,69 @@ function ReaderInner() {
 
   function changeView(v: View) {
     setView(v);
-    if (v === "ai" || v === "web") setLastTrans(v);
+    if (v === "gemini" || v === "google") setLastTrans(v);
+    try {
+      window.localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // storage unavailable: the choice just isn't remembered
+    }
   }
+
+  // Remember the last view per browser (localStorage is unknown at prerender).
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(VIEW_KEY);
+      if (v === "google" || v === "gemini" || v === "source" || v === "both") {
+        setView(v);
+        if (v === "gemini" || v === "google") setLastTrans(v);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Machine translation progress; polled while the server is still working.
+  useEffect(() => {
+    if (!novelId) return;
+    let dead = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () =>
+      siteApi
+        .mtStatus(novelId)
+        .then((s) => {
+          if (dead) return;
+          setMt(s);
+          if (s.status === "queued" || s.status === "running") timer = setTimeout(tick, 15000);
+        })
+        .catch(() => undefined);
+    tick();
+    return () => {
+      dead = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [novelId]);
 
   // The translation a view shows for a chapter. "Both" follows the last pick,
   // and uses the web one when the chapter has no AI translation.
-  function effTrans(c: ChapterDetail, v: View): "ai" | "web" | null {
-    if (v === "ai") return "ai";
-    if (v === "web") return "web";
-    if (v === "both") return lastTrans === "web" || !c.translation ? "web" : "ai";
+  function effTrans(c: ChapterDetail, v: View): "mt" | "web" | "ai" | null {
+    const google = c.translation_mt ? "mt" : "web";
+    if (v === "gemini") return "ai";
+    if (v === "google") return google;
+    if (v === "both") return lastTrans === "gemini" && c.translation ? "ai" : google;
     return null;
+  }
+
+  // Heading for a chapter in a view: the matching translation's title.
+  function titleFor(c: ChapterDetail, v: View) {
+    const t = effTrans(c, v);
+    const en =
+      t === "mt" ? c.title_mt || c.title_en : t === "ai" ? c.title_en : c.title_en || c.title_mt;
+    return displayTitle(c.title, en);
   }
 
   useEffect(() => {
     webTranslateAvailable().then(setWebMode);
   }, []);
-
-  // A non-Chinese book has no Web view: fall back to the source text.
-  useEffect(() => {
-    if (isZh) return;
-    if (view === "web") setView("source");
-    if (lastTrans === "web") setLastTrans("ai");
-  }, [isZh, view, lastTrans]);
 
   function downloadPack() {
     // Translator.create must start inside this click handler.
@@ -769,7 +809,7 @@ function ReaderInner() {
         { chapter: c.idx, cachePrefix: `${novelId}:${c.idx}`, source: novel?.source_lang },
       );
       const title =
-        c.title && !c.title_en
+        c.title && !c.title_en && !c.title_mt
           ? webTranslate([c.title], glossaryRef.current, undefined, {
               chapter: c.idx,
               source: novel?.source_lang,
@@ -806,9 +846,9 @@ function ReaderInner() {
     );
   }
 
-  const ht = displayTitle(chapter?.title, chapter?.title_en);
+  const ht = chapter ? titleFor(chapter, view) : { text: "", hover: undefined };
   const rootWebTitle =
-    chapter && !chapter.title_en && effTrans(chapter, view) === "web"
+    chapter && !chapter.title_en && !chapter.title_mt && effTrans(chapter, view) === "web"
       ? web[chapter.idx]?.title
       : null;
   const heading = rootWebTitle || ht.text || `Chapter ${chapterIdx + 1}`;
@@ -844,6 +884,22 @@ function ReaderInner() {
   // The chapter text in the current view.
   // The free web translation of a chapter, or why there is none yet.
   function renderWeb(c: ChapterDetail) {
+    const mtNote =
+      mt && (mt.status === "queued" || mt.status === "running")
+        ? `Machine translation in progress (${mt.done}/${mt.total}). `
+        : "";
+    const body = renderWebInner(c);
+    return mtNote ? (
+      <>
+        <p className="small muted">{mtNote}Showing the in-browser translation meanwhile.</p>
+        {body}
+      </>
+    ) : (
+      body
+    );
+  }
+
+  function renderWebInner(c: ChapterDetail) {
     if (!isZh) {
       return <p className="small muted">Free translation supports Chinese books only.</p>;
     }
@@ -905,9 +961,13 @@ function ReaderInner() {
             </div>
           </div>
           <div>
-            <div className="small muted">{t === "web" ? "English (web)" : "English"}</div>
+            <div className="small muted">{t === "ai" ? "English (Gemini)" : t === "mt" ? "English (Google)" : "English (web)"}</div>
             {t === "web" ? (
               renderWeb(c)
+            ) : t === "mt" ? (
+              <div className="prose reader-text">
+                <GlossaryText text={c.translation_mt ?? ""} {...textProps} />
+              </div>
             ) : (
               <div className="prose reader-text">
                 <GlossaryText text={c.translation ?? ""} {...textProps} />
@@ -917,7 +977,17 @@ function ReaderInner() {
         </div>
       );
     }
-    if (v === "web") {
+    if (v === "google" && c.translation_mt) {
+      return (
+        <>
+          <div className="prose reader-text">
+            <GlossaryText text={c.translation_mt} {...textProps} />
+          </div>
+          <p className="small muted">Machine translation (Google).</p>
+        </>
+      );
+    }
+    if (v === "google") {
       const w = web[c.idx];
       const unavailable =
         !isZh || webMode === null || webMode === "download" || w?.status === "error";
@@ -932,11 +1002,11 @@ function ReaderInner() {
         </>
       );
     }
-    if (v === "ai" && !c.translation) {
+    if (v === "gemini" && !c.translation) {
       return (
         <>
           <p className="small muted">
-            No AI translation yet. Translate it with AI above, or switch the view to Source.
+            No Gemini translation yet. Translate it with Gemini above, or switch the view to Source.
           </p>
           <div className="prose source reader-text">
             <SourceText text={c.source_text} />
@@ -944,7 +1014,7 @@ function ReaderInner() {
         </>
       );
     }
-    if (v === "ai" && c.translation) {
+    if (v === "gemini" && c.translation) {
       return (
         <div className="prose reader-text">
           <GlossaryText text={c.translation} {...textProps} />
@@ -1062,6 +1132,11 @@ function ReaderInner() {
           {" / "}
           <span title={ht.hover}>{heading}</span>
         </div>
+        {novel && (nvt?.hover || novel.author_en) && (
+          <div className="small muted">
+            Original: {[nvt?.hover, novel.author_en ? novel.author : null].filter(Boolean).join(" · ")}
+          </div>
+        )}
         <div className="row" style={{ gap: 8 }}>
           {flagCount > 0 && novel && (
             <Link
@@ -1092,7 +1167,6 @@ function ReaderInner() {
           onClose={() => setShowSettings(false)}
           view={view}
           onViewChange={changeView}
-          webAvailable={isZh}
         />
       )}
 
@@ -1178,11 +1252,11 @@ function ReaderInner() {
 
         {infinite &&
           stream.map((it) => {
-            const t = displayTitle(it.chapter.title, it.chapter.title_en);
             const c = it.chapter;
-            const v: View = view === "ai" && !c.translation ? "source" : view;
+            const t = titleFor(c, view);
+            const v: View = view === "gemini" && !c.translation ? "source" : view;
             const wt =
-              effTrans(c, view) === "web" && !c.title_en ? web[it.idx]?.title : null;
+              effTrans(c, view) === "web" && !c.title_en && !c.title_mt ? web[it.idx]?.title : null;
             return (
               <section key={it.idx} data-ch={it.idx}>
                 {divider}

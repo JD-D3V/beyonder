@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import BookCover from "../../components/BookCover";
-import { displayTitle, errorText } from "../../lib/api";
+import { displayAuthor, displayTitle, errorText } from "../../lib/api";
 import { compact, RankedNovel, RankPeriod, siteApi } from "../../lib/api-site";
 
 const TABS: { key: RankPeriod; label: string }[] = [
@@ -61,7 +61,7 @@ export default function RankingsPage() {
                 <BookCover title={t.text} id={n.id} size="sm" hasCover={Boolean(n.has_cover)} coverVersion={n.cover_version} />
                 <div className="rank-body">
                   <div className="title" title={t.hover}>{t.text}</div>
-                  <div className="author">{n.author || "Unknown author"}</div>
+                  <div className="author" title={displayAuthor(n.author, n.author_en).hover}>{displayAuthor(n.author, n.author_en).text || "Unknown author"}</div>
                   <div className="pill-row">
                     <span className="pill">{compact(n.views)} views</span>
                     <span className="pill">

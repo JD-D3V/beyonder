@@ -23,6 +23,7 @@ import {
   api,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  displayAuthor,
   displayTitle,
   errorText,
   GlossaryEntry,
@@ -234,6 +235,7 @@ function BookInner() {
   const [status, setStatus] = useState("ongoing");
   const [lang, setLang] = useState("");
   const [description, setDescription] = useState("");
+  const [showOrigDesc, setShowOrigDesc] = useState(false);
 
   const load = useCallback(async () => {
     if (!novelId) return;
@@ -532,6 +534,7 @@ function BookInner() {
     ? Math.round((novel.translated_count / novel.chapter_count) * 100)
     : 0;
   const nt = displayTitle(novel.title, novel.title_en);
+  const na = displayAuthor(novel.author, novel.author_en);
   const untranslated = chapters.filter((c) => !c.translated).length;
 
   return (
@@ -633,7 +636,12 @@ function BookInner() {
             ) : (
               <>
                 <h1 title={nt.hover}>{nt.text}</h1>
-                <div className="muted">{novel.author || "Unknown author"}</div>
+                <div className="muted" title={na.hover}>{na.text || "Unknown author"}</div>
+                {(nt.hover || na.hover) && (
+                  <div className="small muted">
+                    Original: {[nt.hover, na.hover].filter(Boolean).join(" · ")}
+                  </div>
+                )}
                 <div className="pill-row">
                   <span className={`pill status-${novel.status}`}>
                     {novel.status}
@@ -650,7 +658,16 @@ function BookInner() {
                     </span>
                   ))}
                 </div>
-                {novel.description && <p>{novel.description}</p>}
+                {(novel.description_en || novel.description) && (
+                  <p>
+                    {showOrigDesc || !novel.description_en ? novel.description : novel.description_en}
+                  </p>
+                )}
+                {novel.description_en && novel.description && (
+                  <button className="secondary" onClick={() => setShowOrigDesc((v) => !v)}>
+                    {showOrigDesc ? "Show English" : "Show original"}
+                  </button>
+                )}
                 {isAdmin && (
                   <CoverAdmin
                     novelId={novel.id}
@@ -950,12 +967,17 @@ function BookInner() {
                 {displayTitle(c.title, c.title_en).text || `Chapter ${c.idx + 1}`}
               </span>
               <span className="flag">{compactNumber(c.char_count)}</span>
+              {c.mt && (
+                <span className="flag done" title="Machine (Google) translation available">G</span>
+              )}
               <span className={`flag ${c.translated ? "done" : ""}`}>
                 {c.translated
-                  ? "translated"
+                  ? "AI"
                   : c.pieces_done != null
                     ? `in progress (${c.pieces_done} done)`
-                    : "source only"}
+                    : c.mt
+                      ? ""
+                      : "source only"}
               </span>
             </Link>
           ))}

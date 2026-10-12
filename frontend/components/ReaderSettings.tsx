@@ -15,7 +15,7 @@ import {
 import { applyTextStyle } from "../lib/textStyle";
 import { IconX } from "./icons";
 
-type View = "ai" | "web" | "source" | "both";
+type View = "google" | "gemini" | "source" | "both";
 
 const FONT_ORDER: ReaderFont[] = ["nunito", "roboto", "lora", "lexend", "atkinson", "serif", "sans"];
 
@@ -292,15 +292,12 @@ export default function ReaderSettings({
   onClose,
   view,
   onViewChange,
-  webAvailable = true,
 }: {
   prefs: ReaderPrefs;
   onChange: (next: ReaderPrefs) => void;
   onClose: () => void;
   view?: View;
   onViewChange?: (v: View) => void;
-  // Free web translation only supports Chinese books.
-  webAvailable?: boolean;
 }) {
   const [tab, setTab] = useState<"display" | "settings">("display");
   const [advanced, setAdvanced] = useState(false);
@@ -474,8 +471,8 @@ export default function ReaderSettings({
                   label="View"
                   value={view}
                   options={[
-                    { value: "ai", label: "AI" },
-                    ...(webAvailable ? [{ value: "web" as const, label: "Web" }] : []),
+                    { value: "google", label: "Google" },
+                    { value: "gemini", label: "Gemini" },
                     { value: "source", label: "Source" },
                     { value: "both", label: "Both" },
                   ]}
