@@ -36,9 +36,12 @@ def _as(user):
 def _stub_sessions(monkeypatch):
     for m in ("novels", "translate", "reader"):
         monkeypatch.setattr(f"app.api.{m}.get_session", _fake_session)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
 
 
-NOVEL = SimpleNamespace(id=1, title="T", title_en="x", source_lang="zh")
+NOVEL = SimpleNamespace(
+    id=1, title="T", title_en="x", source_lang="zh", visibility="public"
+)
 KEY = {"X-LLM-Provider": "gemini", "X-LLM-Key": "k"}
 
 
@@ -76,7 +79,7 @@ def test_ingest_requires_login(client):
 def test_ask_ignores_client_current_chapter(client, monkeypatch):
     _stub_sessions(monkeypatch)
     _as(_User())
-    monkeypatch.setattr("app.api.reader.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
     monkeypatch.setattr("app.api.reader.get_progress", lambda s, uid, nid: 3)
     seen = {}
 
@@ -101,7 +104,7 @@ def test_ask_requires_login(client):
 def test_non_admin_cannot_overwrite_complete_translation(client, monkeypatch):
     _stub_sessions(monkeypatch)
     _as(_User())
-    monkeypatch.setattr("app.api.translate.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
     monkeypatch.setattr(
         "app.api.translate.get_chapter_by_idx",
         lambda s, nid, idx: SimpleNamespace(id=5, idx=idx),
@@ -134,7 +137,7 @@ def test_non_admin_cannot_overwrite_complete_translation(client, monkeypatch):
 def test_admin_force_resets_and_records_translator(client, monkeypatch):
     _stub_sessions(monkeypatch)
     _as(_User(uid=1, admin=True))
-    monkeypatch.setattr("app.api.translate.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
     monkeypatch.setattr(
         "app.api.translate.get_chapter_by_idx",
         lambda s, nid, idx: SimpleNamespace(id=5, idx=idx),
@@ -175,7 +178,7 @@ def test_llm_error_maps_to_status(client, monkeypatch):
 
     _stub_sessions(monkeypatch)
     _as(_User())
-    monkeypatch.setattr("app.api.translate.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
     monkeypatch.setattr("app.api.translate.get_chapter_by_idx", lambda s, n, i: None)
 
     for code, status in [
@@ -216,7 +219,7 @@ def test_translate_returns_stored_text_when_race_lost(client, monkeypatch):
 
     _stub_sessions(monkeypatch)
     _as(_User())
-    monkeypatch.setattr("app.api.translate.get_novel", lambda s, nid: NOVEL)
+    monkeypatch.setattr("app.api.access.get_novel", lambda s, nid: NOVEL)
     monkeypatch.setattr(
         "app.api.translate.get_chapter_by_idx",
         lambda s, nid, idx: SimpleNamespace(id=5, idx=idx),

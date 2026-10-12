@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..auth.deps import current_user
 from ..common.logging import get_logger
+from .access import visible_novel_or_404
 from ..graph.orchestrator import run_translation_graph
 from ..graph.resumable import translate_step
 from ..llm.client import LLMError
@@ -54,9 +55,7 @@ async def translate(
 ) -> TranslateResult:
     llm = resolve_llm(request.headers, user)
     with get_session() as s:
-        novel = get_novel(s, body.novel_id)
-        if novel is None:
-            raise HTTPException(404, "novel not found")
+        novel = visible_novel_or_404(s, body.novel_id, user)
         title = novel.title
         src_lang = novel.source_lang
         chap, done = _complete_translation(
@@ -125,9 +124,7 @@ async def translate_batch(
     """
     llm = resolve_llm(request.headers, user)
     with get_session() as s:
-        novel = get_novel(s, body.novel_id)
-        if novel is None:
-            raise HTTPException(404, "novel not found")
+        novel = visible_novel_or_404(s, body.novel_id, user)
         title = novel.title
         src_lang = novel.source_lang
         pending = [
@@ -205,8 +202,7 @@ async def translate_step_route(
     """
     llm = resolve_llm(request.headers, user)
     with get_session() as s:
-        if get_novel(s, body.novel_id) is None:
-            raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, body.novel_id, user)
         chap, done = _complete_translation(
             s, body.novel_id, body.chapter_idx, body.target_lang
         )

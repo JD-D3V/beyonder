@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IconChevronLeft, IconFileText, IconLink, IconUpload } from "../../components/icons";
-import { api, errorText } from "../../lib/api";
+import { api, errorText, type Visibility } from "../../lib/api";
+import { getSession, SESSION_EVENT } from "../../lib/session";
 
 type Mode = "file" | "paste" | "url";
 
@@ -14,6 +15,22 @@ export default function ImportPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+
+  // Only admins can publish; everyone else's imports are private to them.
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [visibility, setVisibility] = useState<Visibility>("private");
+  useEffect(() => {
+    const sync = () => setIsAdmin(Boolean(getSession()?.user.is_admin));
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    return () => window.removeEventListener(SESSION_EVENT, sync);
+  }, []);
+  // Admins start on Public (the old behaviour); they can still pick Private.
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (isAdmin && !touched) setVisibility("public");
+  }, [isAdmin, touched]);
+  const chosen: Visibility = isAdmin ? visibility : "private";
 
   // Shared metadata
   const [title, setTitle] = useState("");
@@ -58,6 +75,7 @@ export default function ImportPage() {
           description: description.trim() || undefined,
           tags: tagList.join(",") || undefined,
           source_lang: lang.trim() || undefined,
+          visibility: chosen,
         });
         novelId = res.novel_id;
       } else if (mode === "paste") {
@@ -70,6 +88,7 @@ export default function ImportPage() {
           description: description.trim() || undefined,
           tags: tagList,
           source_lang: lang.trim() || undefined,
+          visibility: chosen,
         });
         novelId = res.novel_id;
       } else {
@@ -83,6 +102,7 @@ export default function ImportPage() {
           title: title.trim(),
           urls: list,
           source_lang: lang.trim() || undefined,
+          visibility: chosen,
         });
         novelId = res.novel_id;
       }
@@ -102,6 +122,9 @@ export default function ImportPage() {
           <h1>Import a book</h1>
           <div className="sub">
             Anything you import is saved to your library and stays there.
+            {isAdmin
+              ? " Choose whether it is public or private."
+              : " Your imports are private: only you can see them."}
           </div>
         </div>
         <Link href="/">
@@ -244,6 +267,27 @@ export default function ImportPage() {
               placeholder="Detected automatically"
             />
           </div>
+        </div>
+        <div className="field">
+          <label>Visibility</label>
+          {isAdmin ? (
+            <select
+              value={visibility}
+              onChange={(e) => {
+                setTouched(true);
+                setVisibility(e.target.value as Visibility);
+              }}
+              aria-label="Visibility"
+            >
+              <option value="public">Public: listed in the catalog for everyone</option>
+              <option value="private">Private: only you and admins</option>
+            </select>
+          ) : (
+            <div className="small muted">
+              <span className="pill">Private</span> Only you (and admins) can see
+              and read this book.
+            </div>
+          )}
         </div>
         <div className="field">
           <label>Description</label>

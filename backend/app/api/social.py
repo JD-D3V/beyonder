@@ -8,11 +8,12 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..auth.deps import current_user, require_admin
+from ..auth.deps import current_user, current_user_optional, require_admin
 from ..auth.throttle import SlidingWindow
 from ..storage.db import get_session
 from ..storage.models import Comment, ContentReport, Review, User
-from ..storage.repository import get_chapter_by_idx, get_novel
+from ..storage.repository import get_chapter_by_idx
+from .access import require_public, visible_novel_or_404
 
 router = APIRouter()
 
@@ -121,9 +122,14 @@ class ReportOut(BaseModel):
 
 # --- Reviews / ratings ----------------------------------------------------
 
-def _require_novel(s, novel_id: int) -> None:
-    if get_novel(s, novel_id) is None:
-        raise HTTPException(404, "novel not found")
+def _require_novel(
+    s, novel_id: int, user: User | None, *, write: bool = False
+) -> None:
+    """404 unless ``user`` may see the book. Reviews and comments exist only
+    on public books, so writing to a private one is refused outright."""
+    novel = visible_novel_or_404(s, novel_id, user)
+    if write:
+        require_public(novel, "Reviews and comments")
 
 
 def _review_out(r: Review, name: str | None) -> ReviewOut:
@@ -138,9 +144,10 @@ async def list_reviews(
     novel_id: int,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: User | None = Depends(current_user_optional),
 ) -> list[ReviewOut]:
     with get_session() as s:
-        _require_novel(s, novel_id)
+        _require_novel(s, novel_id, user)
         rows = s.execute(
             select(Review, User.display_name)
             .join(User, User.id == Review.user_id)
@@ -153,9 +160,11 @@ async def list_reviews(
 
 
 @router.get("/novels/{novel_id}/rating", response_model=RatingOut)
-async def get_rating(novel_id: int) -> RatingOut:
+async def get_rating(
+    novel_id: int, user: User | None = Depends(current_user_optional)
+) -> RatingOut:
     with get_session() as s:
-        _require_novel(s, novel_id)
+        _require_novel(s, novel_id, user)
         counts = dict(
             s.execute(
                 select(Review.rating, func.count(Review.id))
@@ -176,7 +185,7 @@ async def put_review(
     novel_id: int, body: ReviewIn, user: User = Depends(current_user)
 ) -> ReviewOut:
     with get_session() as s:
-        _require_novel(s, novel_id)
+        _require_novel(s, novel_id, user, write=True)
         if not _review_writes.hit(f"u{user.id}"):
             raise _too_many("review changes")
         s.execute(
@@ -206,7 +215,7 @@ async def delete_own_review(
     novel_id: int, user: User = Depends(current_user)
 ) -> Response:
     with get_session() as s:
-        _require_novel(s, novel_id)
+        _require_novel(s, novel_id, user)
         if not _review_writes.hit(f"u{user.id}"):
             raise _too_many("review changes")
         s.execute(
@@ -225,14 +234,17 @@ async def admin_delete_review(
         r = s.get(Review, review_id)
         if r is None:
             raise HTTPException(404, "review not found")
+        visible_novel_or_404(s, r.novel_id, _admin)
         s.delete(r)
     return Response(status_code=204)
 
 
 # --- Comments -------------------------------------------------------------
 
-def _require_chapter(s, novel_id: int, idx: int) -> None:
-    _require_novel(s, novel_id)
+def _require_chapter(
+    s, novel_id: int, idx: int, user: User | None, *, write: bool = False
+) -> None:
+    _require_novel(s, novel_id, user, write=write)
     if get_chapter_by_idx(s, novel_id, idx) is None:
         raise HTTPException(404, "chapter not found")
 
@@ -253,9 +265,13 @@ def _comment_out(c: Comment, name: str | None) -> CommentOut:
 @router.get(
     "/novels/{novel_id}/chapters/{idx}/comments", response_model=list[CommentOut]
 )
-async def list_comments(novel_id: int, idx: int) -> list[CommentOut]:
+async def list_comments(
+    novel_id: int,
+    idx: int,
+    user: User | None = Depends(current_user_optional),
+) -> list[CommentOut]:
     with get_session() as s:
-        _require_chapter(s, novel_id, idx)
+        _require_chapter(s, novel_id, idx, user)
         rows = s.execute(
             select(Comment, User.display_name)
             .join(User, User.id == Comment.user_id)
@@ -288,7 +304,7 @@ async def post_comment(
     novel_id: int, idx: int, body: CommentIn, user: User = Depends(current_user)
 ) -> CommentOut:
     with get_session() as s:
-        _require_chapter(s, novel_id, idx)
+        _require_chapter(s, novel_id, idx, user, write=True)
         if body.parent_id is not None:
             parent = s.get(Comment, body.parent_id)
             if parent is None or parent.deleted:
@@ -321,6 +337,7 @@ async def delete_comment(
         c = s.get(Comment, comment_id)
         if c is None:
             raise HTTPException(404, "comment not found")
+        visible_novel_or_404(s, c.novel_id, user)
         if c.user_id != user.id and not user.is_admin:
             raise HTTPException(403, "Not your comment.")
         c.deleted = True
@@ -333,8 +350,10 @@ async def delete_comment(
 async def create_report(body: ReportIn, user: User = Depends(current_user)) -> dict:
     model = Review if body.kind == "review" else Comment
     with get_session() as s:
-        if s.get(model, body.target_id) is None:
+        target = s.get(model, body.target_id)
+        if target is None:
             raise HTTPException(404, f"{body.kind} not found")
+        visible_novel_or_404(s, target.novel_id, user)
         s.execute(
             pg_insert(ContentReport)
             .values(

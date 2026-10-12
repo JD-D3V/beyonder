@@ -89,8 +89,8 @@ def test_batch_excludes_lost_race_chapters(monkeypatch):
 
     monkeypatch.setattr("app.api.translate.get_session", sess)
     monkeypatch.setattr(
-        "app.api.translate.get_novel",
-        lambda s, nid: SimpleNamespace(title="T", source_lang="zh"),
+        "app.api.access.get_novel",
+        lambda s, nid: SimpleNamespace(title="T", source_lang="zh", visibility="public"),
     )
     monkeypatch.setattr(
         "app.api.translate.chapter_rows",
@@ -212,13 +212,19 @@ def test_ingest_url_source_url_only_for_one_chapter_per_page(db_session, monkeyp
     from app.ingest.scraper import ScrapedPage
     from app.storage.models import Chapter
 
+    from app.storage.models import User
+
+    owner = User(email="own@x.com", password_hash="x")
+    db_session.add(owner)
+    db_session.commit()
+
     def run(texts):
         async def fake(urls, concurrency=3):
             return [ScrapedPage(url=u, title=None, text=t) for u, t in zip(urls, texts)]
 
         monkeypatch.setattr("app.api.novels.scrape_many", fake)
         app.dependency_overrides[current_user] = lambda: SimpleNamespace(
-            id=1, email="u@x", is_admin=False
+            id=owner.id, email="u@x", is_admin=False
         )
         try:
             with TestClient(app) as c:

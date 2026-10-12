@@ -213,8 +213,8 @@ def test_translate_route_invalid_key_400_nothing_persisted(monkeypatch):
     _stub_graph_db(monkeypatch, writes)
     monkeypatch.setattr("app.api.translate.get_session", _fake_session)
     monkeypatch.setattr(
-        "app.api.translate.get_novel",
-        lambda s, nid: SimpleNamespace(id=1, title="T", source_lang="zh"),
+        "app.api.access.get_novel",
+        lambda s, nid: SimpleNamespace(id=1, title="T", source_lang="zh", visibility="public"),
     )
     monkeypatch.setattr("app.api.translate.get_chapter_by_idx", lambda s, n, i: None)
     monkeypatch.setattr(
@@ -326,7 +326,7 @@ def test_ask_llm_error_maps_to_status(monkeypatch, code, status):
     monkeypatch.setattr(qa, "search_chunks", lambda **k: [hit])
     monkeypatch.setattr("app.api.reader.get_session", _fake_session)
     monkeypatch.setattr(
-        "app.api.reader.get_novel", lambda s, nid: SimpleNamespace(title="T")
+        "app.api.access.get_novel", lambda s, nid: SimpleNamespace(title="T", visibility="public")
     )
     monkeypatch.setattr("app.api.reader.get_progress", lambda s, u, n: 3)
     monkeypatch.setattr("app.api.reader.resolve_llm", lambda h, u: _RaiseLLM(code))

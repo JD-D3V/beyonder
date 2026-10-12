@@ -134,6 +134,9 @@ def test_flags_route_public_and_resolve(monkeypatch):
 
     monkeypatch.setattr(reader, "get_session", fake_session)
     monkeypatch.setattr(reader, "list_flags", fake_list)
+    monkeypatch.setattr(
+        "app.api.access.get_novel", lambda s, n: SimpleNamespace(visibility="public")
+    )
     monkeypatch.setattr(reader, "resolve_flag", fake_resolve)
     app.dependency_overrides[require_admin] = lambda: _Admin()
     try:
@@ -190,6 +193,9 @@ def test_flags_route_limits_to_progress(monkeypatch):
 
     monkeypatch.setattr(reader, "get_session", fake_session)
     monkeypatch.setattr(reader, "list_flags", lambda s, n, st, ch: [mk(1, 1), mk(2, 5)])
+    monkeypatch.setattr(
+        "app.api.access.get_novel", lambda s, n: SimpleNamespace(visibility="public")
+    )
     monkeypatch.setattr(reader, "get_progress", lambda s, u, n: 2)
     try:
         with TestClient(app) as c:

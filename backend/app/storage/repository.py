@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Iterable, Sequence
 
-from sqlalchemy import Select, delete as sa_delete, func, select, update
+from sqlalchemy import Select, delete as sa_delete, false, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -22,9 +22,13 @@ from .models import (
 # --- Novels ---------------------------------------------------------------
 
 def create_novel(
-    session: Session, *, title: str, source_lang: str, source_url: str | None = None
+    session: Session, *, title: str, source_lang: str, source_url: str | None = None,
+    visibility: str = "public", owner_id: int | None = None,
 ) -> Novel:
-    novel = Novel(title=title, source_lang=source_lang, source_url=source_url)
+    novel = Novel(
+        title=title, source_lang=source_lang, source_url=source_url,
+        visibility=visibility, owner_id=owner_id,
+    )
     session.add(novel)
     session.flush()
     return novel
@@ -497,6 +501,12 @@ class CatalogParams:
     limit: int | None = None
     offset: int = 0
     ids: tuple[int, ...] | None = None  # restrict to these novels
+    # Who is asking. By default only public books are returned; a viewer also
+    # gets the private books they own, and an admin viewer gets everything.
+    viewer_id: int | None = None
+    viewer_is_admin: bool = False
+    # Only the viewer's own imports (needs viewer_id).
+    mine: bool = False
 
 
 def _like_escape(raw: str) -> str:
@@ -579,6 +589,16 @@ def catalog_query(params: CatalogParams) -> Select:
         stmt = stmt.where(joined.like(f"%,{tag},%", escape="\\"))
     if params.ids is not None:
         stmt = stmt.where(Novel.id.in_(params.ids))
+    if params.mine:
+        if params.viewer_id is None:
+            stmt = stmt.where(false())
+        else:
+            stmt = stmt.where(Novel.owner_id == params.viewer_id)
+    if not params.viewer_is_admin:
+        visible = Novel.visibility == "public"
+        if params.viewer_id is not None:
+            visible = visible | (Novel.owner_id == params.viewer_id)
+        stmt = stmt.where(visible)
     if params.status:
         stmt = stmt.where(Novel.status == params.status)
     if params.min_chapters is not None:
@@ -645,7 +665,7 @@ def remove_shelf(session: Session, user_id: int, novel_id: int) -> None:
 
 
 def shelf_rows(
-    session: Session, user_id: int
+    session: Session, user_id: int, *, is_admin: bool = False
 ) -> list[tuple[str, LibraryRow, int]]:
     """(shelf, row, current_chapter) for one user's shelved books, newest first."""
     entries = session.execute(
@@ -658,7 +678,10 @@ def shelf_rows(
     ids = [nid for nid, _ in entries]
     by_id = {
         r.novel.id: r
-        for r in library_rows(session, CatalogParams(ids=tuple(ids)))
+        for r in library_rows(
+            session,
+            CatalogParams(ids=tuple(ids), viewer_id=user_id, viewer_is_admin=is_admin),
+        )
     }
     progress = dict(
         session.execute(
@@ -764,7 +787,7 @@ def update_novel(session: Session, novel_id: int, **fields) -> Novel | None:
         return None
     allowed = {
         "title", "title_en", "author", "description", "tags", "status",
-        "source_lang", "source_index_url",
+        "source_lang", "source_index_url", "visibility",
     }
     for key, value in fields.items():
         if key in allowed and value is not None:
@@ -908,7 +931,13 @@ def record_view(
 def ranking_query(period: str, limit: int, today: date) -> Select:
     """(novel_id, views) for the top novels in the window, ties by id."""
     total = func.sum(NovelDailyStat.views).label("views")
-    stmt = select(NovelDailyStat.novel_id, total).group_by(NovelDailyStat.novel_id)
+    # Private books never rank (filtered here so they cannot take a slot).
+    stmt = (
+        select(NovelDailyStat.novel_id, total)
+        .join(Novel, Novel.id == NovelDailyStat.novel_id)
+        .where(Novel.visibility == "public")
+        .group_by(NovelDailyStat.novel_id)
+    )
     days = RANK_WINDOW_DAYS.get(period)
     if days is not None:
         stmt = stmt.where(NovelDailyStat.day > today - timedelta(days=days))

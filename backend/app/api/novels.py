@@ -52,6 +52,7 @@ from ..storage.repository import (
     update_novel,
     update_term,
 )
+from .access import visible_novel_or_404
 from .viewstats import today_utc, track_chapter_view
 from .schemas import (
     ChapterDetail,
@@ -114,6 +115,7 @@ def _novel_out(
         rating_count=rating_count,
         has_cover=cover_at is not None,
         cover_version=cover_version(novel.id, cover_at) if cover_at else None,
+        visibility=novel.visibility,
     )
 
 
@@ -127,11 +129,18 @@ async def list_novels_route(
     sort: Literal["updated", "new", "chapters", "views", "rating"] = "updated",
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    mine: bool = False,
+    user: User | None = Depends(current_user_optional),
 ) -> list[NovelOut]:
-    """The catalog: searchable, filterable, newest activity first by default."""
+    """The catalog: searchable, filterable, newest activity first by default.
+
+    Public books, plus the signed-in user's own private ones (``mine`` narrows
+    to just their own imports). Other people's private books never appear.
+    """
     params = CatalogParams(
         q=q, tag=tag, status=status, min_chapters=min_chapters,
         max_chapters=max_chapters, sort=sort, limit=limit, offset=offset,
+        viewer_id=user.id if user else None, mine=mine,
     )
     with get_session() as s:
         return [
@@ -164,23 +173,35 @@ async def rankings_route(
         ]
 
 
+def _novel_detail(s, novel_id: int) -> NovelOut:
+    """One book as NovelOut. The caller has already checked visibility."""
+    rows = library_rows(
+        s, CatalogParams(ids=(novel_id,), viewer_is_admin=True)
+    )
+    if not rows:
+        raise HTTPException(404, "novel not found")
+    r = rows[0]
+    return _novel_out(
+        r.novel, r.chapter_count, r.char_count, r.translated_count,
+        r.views_total, r.rating_avg, r.rating_count,
+    )
+
+
 @router.get("/novels/{novel_id}", response_model=NovelOut)
-async def get_novel_route(novel_id: int) -> NovelOut:
+async def get_novel_route(
+    novel_id: int, user: User | None = Depends(current_user_optional)
+) -> NovelOut:
     with get_session() as s:
-        for r in library_rows(s):
-            if r.novel.id == novel_id:
-                return _novel_out(
-                    r.novel, r.chapter_count, r.char_count, r.translated_count,
-                    r.views_total, r.rating_avg, r.rating_count,
-                )
-    raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, novel_id, user)
+        return _novel_detail(s, novel_id)
 
 
 @router.patch("/novels/{novel_id}", response_model=NovelOut)
 async def patch_novel_route(
-    novel_id: int, body: NovelPatch, _admin: User = Depends(require_admin)
+    novel_id: int, body: NovelPatch, admin: User = Depends(require_admin)
 ) -> NovelOut:
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, admin)
         updated = update_novel(
             s,
             novel_id,
@@ -191,10 +212,11 @@ async def patch_novel_route(
             tags=_join_tags(body.tags),
             status=body.status,
             source_lang=body.source_lang,
+            visibility=body.visibility,
         )
         if updated is None:
             raise HTTPException(404, "novel not found")
-    return await get_novel_route(novel_id)
+        return _novel_detail(s, novel_id)
 
 
 @router.patch(
@@ -204,11 +226,12 @@ async def patch_glossary_term_route(
     novel_id: int,
     term_id: int,
     body: GlossaryPatch,
-    _admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ) -> GlossaryEntryOut:
     """Edit a glossary rendering and/or lock it. Editing a rendering locks it
     unless ``locked`` is sent explicitly; locked terms survive re-translation."""
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, admin)
         t = update_term(
             s, novel_id, term_id, target_term=body.target_term, locked=body.locked
         )
@@ -219,10 +242,11 @@ async def patch_glossary_term_route(
 
 @router.delete("/novels/{novel_id}")
 async def delete_novel_route(
-    novel_id: int, _admin: User = Depends(require_admin)
+    novel_id: int, admin: User = Depends(require_admin)
 ) -> dict:
     """Remove a book and everything derived from it."""
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, admin)
         if not delete_novel(s, novel_id):
             raise HTTPException(404, "novel not found")
     log.info("novel.deleted", novel_id=novel_id)
@@ -230,14 +254,27 @@ async def delete_novel_route(
 
 
 @router.get("/novels/{novel_id}/cover")
-async def get_cover_route(novel_id: int, request: Request) -> Response:
-    """The cover as WebP. Cacheable for a day; revalidates by ETag."""
+async def get_cover_route(
+    novel_id: int,
+    request: Request,
+    user: User | None = Depends(current_user_optional),
+) -> Response:
+    """The cover as WebP. Cacheable for a day; revalidates by ETag.
+
+    A private book's cover is only for its owner/admin, so shared caches must
+    not keep it.
+    """
     with get_session() as s:
+        novel = visible_novel_or_404(s, novel_id, user)
         at = get_cover_updated_at(s, novel_id)
         if at is None:
             raise HTTPException(404, "no cover")
         etag = f'"{cover_version(novel_id, at)}"'
-        headers = {"Cache-Control": "public, max-age=86400", "ETag": etag}
+        cache = (
+            "public, max-age=86400" if novel.visibility == "public"
+            else "private, no-cache"
+        )
+        headers = {"Cache-Control": cache, "ETag": etag}
         sent = [t.strip().removeprefix("W/") for t in
                 request.headers.get("if-none-match", "").split(",")]
         if etag in sent or "*" in sent:
@@ -264,12 +301,11 @@ async def _store_cover(novel_id: int, raw: bytes) -> None:
 
 @router.put("/novels/{novel_id}/cover", response_model=NovelOut)
 async def put_cover_route(
-    novel_id: int, request: Request, _admin: User = Depends(require_admin)
+    novel_id: int, request: Request, admin: User = Depends(require_admin)
 ) -> NovelOut:
     """Set the cover from a multipart ``file`` or a JSON ``{"url": ...}``."""
     with get_session() as s:
-        if get_novel(s, novel_id) is None:
-            raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, novel_id, admin)
     ctype = request.headers.get("content-type", "").lower()
     if ctype.startswith("application/json"):
         try:
@@ -304,14 +340,16 @@ async def put_cover_route(
         if len(raw) > MAX_COVER_BYTES:
             raise HTTPException(413, "image is larger than 5 MB")
     await _store_cover(novel_id, raw)
-    return await get_novel_route(novel_id)
+    with get_session() as s:
+        return _novel_detail(s, novel_id)
 
 
 @router.delete("/novels/{novel_id}/cover")
 async def delete_cover_route(
-    novel_id: int, _admin: User = Depends(require_admin)
+    novel_id: int, admin: User = Depends(require_admin)
 ) -> dict:
     with get_session() as s:
+        visible_novel_or_404(s, novel_id, admin)
         if not delete_cover(s, novel_id):
             raise HTTPException(404, "no cover")
     return {"ok": True}
@@ -319,11 +357,12 @@ async def delete_cover_route(
 
 @router.get("/novels/{novel_id}/chapters", response_model=list[ChapterOut])
 async def list_chapters_route(
-    novel_id: int, target_lang: str = "en"
+    novel_id: int,
+    target_lang: str = "en",
+    user: User | None = Depends(current_user_optional),
 ) -> list[ChapterOut]:
     with get_session() as s:
-        if get_novel(s, novel_id) is None:
-            raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, novel_id, user)
         return [
             ChapterOut(
                 idx=r.idx,
@@ -350,12 +389,14 @@ async def get_chapter_route(
     Signed-in readers have their position advanced to this chapter (never back).
     """
     with get_session() as s:
+        novel = visible_novel_or_404(s, novel_id, user)
         chap = get_chapter_by_idx(s, novel_id, idx)
         if chap is None:
             raise HTTPException(404, "chapter not found")
         if user is not None:
             advance_progress(s, user.id, novel_id, idx)
-        track_chapter_view(s, request, user, novel_id)
+        if novel.visibility == "public":  # private reads are not counted
+            track_chapter_view(s, request, user, novel_id)
         tr = get_translation(s, chapter_id=chap.id, target_lang=target_lang)
         return ChapterDetail(
             idx=chap.idx,
@@ -384,9 +425,7 @@ async def translate_titles_route(
     English translation, plus the book title. Batched to save LLM quota."""
     llm = resolve_llm(request.headers, admin)
     with get_session() as s:
-        novel = get_novel(s, novel_id)
-        if novel is None:
-            raise HTTPException(404, "novel not found")
+        novel = visible_novel_or_404(s, novel_id, admin)
         novel_title = novel.title
         need_novel = not novel.title_en
         glossary = [
@@ -430,6 +469,15 @@ _EPUB_SUFFIXES = {".epub"}
 _PDF_SUFFIXES = {".pdf"}
 
 
+def _import_visibility(user: User, requested: str | None) -> str:
+    """Admins choose (default public); everyone else's imports are private."""
+    if user.is_admin:
+        return requested or "public"
+    if requested == "public":
+        raise HTTPException(403, "Only admins can import public books.")
+    return "private"
+
+
 def _persist_novel(
     *,
     title: str,
@@ -439,6 +487,8 @@ def _persist_novel(
     author: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
+    user: User,
+    visibility: str | None = None,
 ) -> IngestResult:
     """Split text into chapters and save the book. The one way in.
 
@@ -449,9 +499,11 @@ def _persist_novel(
     parsed = split_chapters(text)
     if not parsed:
         raise HTTPException(400, "no chapters parsed from text")
+    vis = _import_visibility(user, visibility)
     with get_session() as s:
         novel = create_novel(
-            s, title=title, source_lang=lang, source_url=source_url
+            s, title=title, source_lang=lang, source_url=source_url,
+            visibility=vis, owner_id=user.id,
         )
         update_novel(
             s,
@@ -476,9 +528,11 @@ def _persist_novel(
 
 @router.post("/novels/ingest/text", response_model=IngestResult)
 async def ingest_text(
-    body: IngestTextIn, _user: User = Depends(current_user)
+    body: IngestTextIn, user: User = Depends(current_user)
 ) -> IngestResult:
     return _persist_novel(
+        user=user,
+        visibility=body.visibility,
         title=body.title,
         text=body.text,
         source_lang=body.source_lang,
@@ -497,7 +551,8 @@ async def upload_novel(
     description: str | None = Form(default=None),
     tags: str | None = Form(default=None),
     source_lang: str | None = Form(default=None),
-    _user: User = Depends(current_user),
+    visibility: Literal["public", "private"] | None = Form(default=None),
+    user: User = Depends(current_user),
 ) -> IngestResult:
     """Import a book from a .txt, .md, .epub or .pdf file and save it.
 
@@ -551,6 +606,8 @@ async def upload_novel(
         raise HTTPException(400, f"no text found in {name}")
 
     result = _persist_novel(
+        user=user,
+        visibility=visibility,
         title=(title or Path(name).stem).strip()[:512],
         text=text,
         source_lang=source_lang,
@@ -569,8 +626,9 @@ async def upload_novel(
 
 @router.post("/novels/ingest/url", response_model=IngestResult)
 async def ingest_url(
-    body: IngestUrlIn, _user: User = Depends(current_user)
+    body: IngestUrlIn, user: User = Depends(current_user)
 ) -> IngestResult:
+    vis = _import_visibility(user, body.visibility)
     try:
         pages = await scrape_many(body.urls, concurrency=2)
     except UnsafeURL as e:
@@ -601,7 +659,9 @@ async def ingest_url(
         url = p.url[:1024] if len(got) == 1 else None
         items.extend((c, url) for c in got)
     with get_session() as s:
-        novel = create_novel(s, title=body.title, source_lang=lang)
+        novel = create_novel(
+            s, title=body.title, source_lang=lang, visibility=vis, owner_id=user.id
+        )
         update_novel(
             s, novel.id, source_index_url=(body.index_url or body.urls[0])[:1024]
         )
@@ -621,9 +681,11 @@ async def ingest_url(
 
 @router.post("/novels/{novel_id}/check-updates", response_model=UpdateCheckResult)
 async def check_updates(
-    novel_id: int, _admin: User = Depends(require_admin)
+    novel_id: int, admin: User = Depends(require_admin)
 ) -> UpdateCheckResult:
     """Scrape chapters that appeared on the source index since the import."""
+    with get_session() as s:
+        visible_novel_or_404(s, novel_id, admin)
     try:
         outcome = await check_novel_updates(novel_id)
     except NovelNotFound:
@@ -656,12 +718,10 @@ async def check_updates(
 
 @router.post("/novels/embed", response_model=EmbedResult)
 async def embed(
-    body: EmbedIn, _user: User = Depends(current_user)
+    body: EmbedIn, user: User = Depends(current_user)
 ) -> EmbedResult:
     with get_session() as s:
-        novel = get_novel(s, body.novel_id)
-        if novel is None:
-            raise HTTPException(404, "novel not found")
+        visible_novel_or_404(s, body.novel_id, user)
         chaps = get_chapters(s, body.novel_id, up_to=body.to_chapter)
         chaps = [c for c in chaps if c.idx >= body.from_chapter]
     n = await embed_chapters(body.novel_id, chaps)
