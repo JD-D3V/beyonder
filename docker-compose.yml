@@ -59,6 +59,23 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Optional free translation fallback for browsers without built-in
+  # translation. Needs about 2 GB RAM.
+  #   docker compose --profile mt up -d libretranslate
+  # then set LIBRETRANSLATE_URL=http://localhost:5000 in .env.
+  libretranslate:
+    profiles: ["mt"]
+    image: libretranslate/libretranslate:v1.6.4
+    container_name: beyonder-libretranslate
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      LT_LOAD_ONLY: zh,en
+      LT_DISABLE_WEB_UI: "true"
+    security_opt:
+      - no-new-privileges:true
+
   # Frontend dev — only inside container. Host never installs npm packages.
   # Bind mount is read-only on node_modules (pnpm store stays in container volume).
   frontend-dev:

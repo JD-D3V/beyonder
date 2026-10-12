@@ -49,7 +49,25 @@ import {
   savePrefs,
 } from "../../lib/readerPrefs";
 
-type View = "translation" | "source" | "both";
+import {
+  splitParagraphs,
+  webTranslate,
+  webTranslateAvailable,
+  type WebMode,
+} from "../../lib/webTranslate";
+
+// ai: the saved AI translation. web: free machine translation done in this
+// browser (never saved). both: source beside whichever translation is shown.
+type View = "ai" | "web" | "source" | "both";
+
+// Free web translation of one chapter, kept in memory only.
+interface WebState {
+  status: "loading" | "done" | "error";
+  note?: string;
+  paras?: string[];
+  title?: string | null;
+  error?: string;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,7 +153,14 @@ function ReaderInner() {
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
   const [flagCount, setFlagCount] = useState(0);
   const [onReading, setOnReading] = useState(false);
-  const [view, setView] = useState<View>("translation");
+  const [view, setView] = useState<View>("ai");
+  // Which translation "Both" sits beside.
+  const [lastTrans, setLastTrans] = useState<"ai" | "web">("ai");
+  const [webMode, setWebMode] = useState<WebMode | null | undefined>(undefined);
+  const [web, setWeb] = useState<Record<number, WebState>>({});
+  const [glossReady, setGlossReady] = useState(false);
+  const webStarted = useRef<Set<number>>(new Set());
+  const webGen = useRef(0);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [newTerms, setNewTerms] = useState<number | null>(null);
@@ -203,8 +228,10 @@ function ReaderInner() {
         const c = await api.getChapter(novelId, chapterIdx);
         if (!isCurrent()) return;
         setChapter(c);
-        // Nothing to show in translation view until one exists.
-        setView(c.translation ? "translation" : "source");
+        // No AI translation yet: open the free web translation instead.
+        const v = c.translation ? "ai" : "web";
+        setView(v);
+        setLastTrans(v);
         return c;
       } catch (e) {
         if (!isCurrent()) return;
@@ -230,9 +257,35 @@ function ReaderInner() {
     const n = ++glossSeq.current;
     api
       .glossary(novelId)
-      .then((g) => n === glossSeq.current && setGlossary(g))
-      .catch(() => n === glossSeq.current && setGlossary([]));
+      .then((g) => {
+        if (n !== glossSeq.current) return;
+        setGlossary(g);
+        setGlossReady(true);
+      })
+      .catch(() => {
+        if (n !== glossSeq.current) return;
+        setGlossary([]);
+        setGlossReady(true);
+      });
   }, [novelId]);
+
+  function changeView(v: View) {
+    setView(v);
+    if (v === "ai" || v === "web") setLastTrans(v);
+  }
+
+  // The translation a view shows for a chapter. "Both" follows the last pick,
+  // and uses the web one when the chapter has no AI translation.
+  function effTrans(c: ChapterDetail, v: View): "ai" | "web" | null {
+    if (v === "ai") return "ai";
+    if (v === "web") return "web";
+    if (v === "both") return lastTrans === "web" || !c.translation ? "web" : "ai";
+    return null;
+  }
+
+  useEffect(() => {
+    webTranslateAvailable().then(setWebMode);
+  }, []);
 
   function resetStream(root: number) {
     streamGen.current += 1;
@@ -267,6 +320,10 @@ function ReaderInner() {
     setErr(null);
     setBusy(false);
     setProgress(null);
+    webGen.current += 1;
+    webStarted.current.clear();
+    setWeb({});
+    setGlossReady(false);
     resetStream(chapterIdx);
     const isCurrent = () => runToken.current === token;
     // Opening a chapter advances server-side progress, which widens what the
@@ -653,6 +710,60 @@ function ReaderInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [infinite]);
 
+  // Free web translation for every shown chapter (the root one and, in
+  // infinite mode, the appended ones). Runs once per chapter; results live in
+  // memory (and the local cache) only and are never sent to the server.
+  const glossaryRef = useRef(glossary);
+  glossaryRef.current = glossary;
+  useEffect(() => {
+    if (!webMode || !glossReady || !novelId) return;
+    const shown: ChapterDetail[] = [];
+    if (chapter && chapter.idx === chapterIdx) shown.push(chapter);
+    for (const it of stream) shown.push(it.chapter);
+    for (const c of shown) {
+      if (effTrans(c, view) !== "web" || webStarted.current.has(c.idx)) continue;
+      webStarted.current.add(c.idx);
+      const gen = webGen.current;
+      const setW = (s: WebState) => {
+        if (gen === webGen.current) setWeb((p) => ({ ...p, [c.idx]: s }));
+      };
+      setW({ status: "loading" });
+      const body = webTranslate(
+        splitParagraphs(c.source_text),
+        glossaryRef.current,
+        (p) =>
+          setW({
+            status: "loading",
+            note: p.note ?? `Translating ${p.done}/${p.total}`,
+          }),
+        { chapter: c.idx, cachePrefix: `${novelId}:${c.idx}` },
+      );
+      const title =
+        c.title && !c.title_en
+          ? webTranslate([c.title], glossaryRef.current, undefined, {
+              chapter: c.idx,
+              cachePrefix: `${novelId}:${c.idx}:title`,
+            })
+              .then((t) => t[0] ?? null)
+              .catch(() => null)
+          : Promise.resolve(null);
+      Promise.all([body, title]).then(
+        ([paras, t]) => setW({ status: "done", paras, title: t }),
+        (e) => setW({ status: "error", error: errorText(e) }),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webMode, glossReady, novelId, chapter, chapterIdx, stream, view, lastTrans, web]);
+
+  function retryWeb(idx: number) {
+    webStarted.current.delete(idx);
+    setWeb((p) => {
+      const n = { ...p };
+      delete n[idx];
+      return n;
+    });
+  }
+
   if (!novelId) {
     return (
       <div className="empty">
@@ -665,7 +776,11 @@ function ReaderInner() {
   }
 
   const ht = displayTitle(chapter?.title, chapter?.title_en);
-  const heading = ht.text || `Chapter ${chapterIdx + 1}`;
+  const rootWebTitle =
+    chapter && !chapter.title_en && effTrans(chapter, view) === "web"
+      ? web[chapter.idx]?.title
+      : null;
+  const heading = rootWebTitle || ht.text || `Chapter ${chapterIdx + 1}`;
   const nvt = novel ? displayTitle(novel.title, novel.title_en) : null;
   const cssVars: Record<string, string> = {
     "--r-font": FONT_STACKS[prefs.font],
@@ -696,8 +811,47 @@ function ReaderInner() {
   };
 
   // The chapter text in the current view.
+  // The free web translation of a chapter, or why there is none yet.
+  function renderWeb(c: ChapterDetail) {
+    if (webMode === undefined) return <p className="small muted">Checking free translation...</p>;
+    if (webMode === null) {
+      return (
+        <p className="small muted">
+          Free translation needs desktop Chrome — or translate with AI.
+        </p>
+      );
+    }
+    const w = web[c.idx];
+    if (!w || w.status === "loading") {
+      return (
+        <p className="small muted">
+          <IconLoaderCircle size={14} className="spin" /> {w?.note || "Translating..."}
+        </p>
+      );
+    }
+    if (w.status === "error") {
+      return (
+        <div className="error">
+          {w.error}{" "}
+          <button className="secondary" onClick={() => retryWeb(c.idx)}>
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return (
+      <>
+        <div className="prose reader-text">
+          <GlossaryText text={(w.paras ?? []).join("\n\n")} {...textProps} />
+        </div>
+        <p className="small muted">Free machine translation, shown only in this browser.</p>
+      </>
+    );
+  }
+
   function renderBody(c: ChapterDetail, v: View) {
-    if (v === "both" && c.translation) {
+    if (v === "both") {
+      const t = effTrans(c, v);
       return (
         <div className="grid-2">
           <div>
@@ -707,15 +861,20 @@ function ReaderInner() {
             </div>
           </div>
           <div>
-            <div className="small muted">English</div>
-            <div className="prose reader-text">
-              <GlossaryText text={c.translation} {...textProps} />
-            </div>
+            <div className="small muted">{t === "web" ? "English (web)" : "English"}</div>
+            {t === "web" ? (
+              renderWeb(c)
+            ) : (
+              <div className="prose reader-text">
+                <GlossaryText text={c.translation ?? ""} {...textProps} />
+              </div>
+            )}
           </div>
         </div>
       );
     }
-    if (v === "translation" && c.translation) {
+    if (v === "web") return renderWeb(c);
+    if (v === "ai" && c.translation) {
       return (
         <div className="prose reader-text">
           <GlossaryText text={c.translation} {...textProps} />
@@ -733,7 +892,7 @@ function ReaderInner() {
   }
 
   function renderMeta(c: ChapterDetail) {
-    if (!c.translated_with || view === "source") return null;
+    if (!c.translated_with || effTrans(c, view) !== "ai") return null;
     return (
       <p className="small muted" style={{ marginTop: 24 }}>
         {c.complete ? (
@@ -862,7 +1021,7 @@ function ReaderInner() {
           onChange={changePrefs}
           onClose={() => setShowSettings(false)}
           view={view}
-          onViewChange={setView}
+          onViewChange={changeView}
         />
       )}
 
@@ -950,12 +1109,14 @@ function ReaderInner() {
           stream.map((it) => {
             const t = displayTitle(it.chapter.title, it.chapter.title_en);
             const c = it.chapter;
-            const v: View = view === "translation" && !c.translation ? "source" : view;
+            const v: View = view === "ai" && !c.translation ? "source" : view;
+            const wt =
+              effTrans(c, view) === "web" && !c.title_en ? web[it.idx]?.title : null;
             return (
               <section key={it.idx} data-ch={it.idx}>
                 {divider}
                 <h2 className="reader-title" title={t.hover}>
-                  {t.text || `Chapter ${it.idx + 1}`}
+                  {wt || t.text || `Chapter ${it.idx + 1}`}
                 </h2>
                 {!c.complete && (
                   <div className="translate-box">

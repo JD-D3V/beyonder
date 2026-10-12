@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql://beyonder:beyonder@localhost:5433/beyonder"
 
+    # Optional self-hosted LibreTranslate for the reader's free "Web" mode.
+    # Unset: /mt/status reports unavailable and /mt/translate is a 404.
+    libretranslate_url: str = ""
+
     # Backend
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

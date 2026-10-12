@@ -89,6 +89,23 @@ chapters in JavaScript, install the browser once and switch backends:
 # then set SCRAPER_BACKEND=playwright (or auto) in .env
 ```
 
+## Free web translation
+
+The reader's view switch is **AI / Web / Source / Both**. **Web** is free machine translation
+with no AI key, like WTR-LAB's Web mode, and it is also what a chapter opens in when it has no
+AI translation yet.
+
+- **Desktop Chrome**: translated on your device with the built-in Translator API (the first use
+  may download a language pack). Nothing is sent anywhere.
+- **Other browsers**: optional self-hosted LibreTranslate. Run
+  `docker compose --profile mt up -d libretranslate` (needs about 2 GB RAM), then set
+  `LIBRETRANSLATE_URL=http://localhost:5000` in `.env`. The API exposes `/mt/status` and
+  `/mt/translate`, public and limited to 60 requests per 5 minutes per IP, 20 texts and 10,000
+  characters per request. Without it, those browsers see "Free translation needs desktop Chrome".
+- Known glossary terms are swapped for their English before translating, so names stay
+  consistent. Results are cached in the browser (IndexedDB), never saved to the server, and
+  never count as a chapter being translated.
+
 ## Deploy
 
 Four free services, no credit card: Render for the API, Supabase for Postgres,
