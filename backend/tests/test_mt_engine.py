@@ -15,6 +15,12 @@ from app.mt.chunking import chunk_text
 from app.mt.provider import MTBlocked, MTError
 
 
+
+def _q(req):
+    """The text Google receives, from the POST form body."""
+    from urllib.parse import parse_qs
+    return parse_qs(req.content.decode())["q"][0]
+
 @pytest.fixture(autouse=True)
 def _mt_env(monkeypatch):
     monkeypatch.setattr(settings, "mt_provider", "google_free")
@@ -36,7 +42,7 @@ def _google(monkeypatch, handler):
 
 def _reply(text_by_q):
     def handler(req: httpx.Request) -> httpx.Response:
-        q = req.url.params["q"]
+        q = _q(req)
         assert req.url.host == "translate.googleapis.com"
         assert req.url.params["sl"] == "zh-CN" and req.url.params["tl"] == "en"
         out = text_by_q(q)
@@ -69,7 +75,7 @@ async def test_google_free_chunks_and_joins(monkeypatch):
     seen = []
 
     def handler(req):
-        seen.append(req.url.params["q"])
+        seen.append(_q(req))
         return httpx.Response(200, json=[[["E" + str(len(seen)) + " ", "x"]], None, "zh-CN"])
 
     _google(monkeypatch, handler)
@@ -229,7 +235,7 @@ async def test_job_blocked_marks_failed_and_resumes(db_session, monkeypatch):
     state = {"fail": True}
 
     def handler(req):
-        if state["fail"] and req.url.params["q"].startswith("正文1"):
+        if state["fail"] and _q(req).startswith("正文1"):
             return httpx.Response(429)
         return httpx.Response(200, json=[[["x", "y"]], None, "zh-CN"])
 

@@ -6,6 +6,8 @@ and why ``MT_PROVIDER`` can switch to LibreTranslate or off.
 """
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from . import gate
@@ -19,6 +21,8 @@ USER_AGENT = "Mozilla/5.0 (compatible; Beyonder/0.1)"
 # ``gtx`` is the documented client id; some networks get a captcha 429 for it
 # while the Chrome dictionary extension's id still works, so fall through.
 CLIENTS = ("gtx", "dict-chrome-ex")
+CLIENT_BACKOFF_S = 3600.0
+_blocked_until: dict[str, float] = {}
 
 # Tests inject an httpx.MockTransport here.
 _transport: httpx.AsyncBaseTransport | None = None
@@ -40,12 +44,20 @@ class GoogleFreeProvider:
 
     async def _one(self, client: httpx.AsyncClient, q: str, sl: str, tl: str) -> str:
         async def fn() -> str:
-            for i, cid in enumerate(CLIENTS):
-                r = await client.get(
-                    URL, params={"client": cid, "sl": sl, "tl": tl, "dt": "t", "q": q}
+            # POST with the text in the body: a GET puts it in the URL, and a
+            # chapter-sized chunk of Chinese is far past Google's URL limit (400).
+            # A client id that answered 429 is skipped for an hour, so a captcha'd
+            # id doesn't cost a wasted request on every chunk.
+            now = time.monotonic()
+            order = [c for c in CLIENTS if _blocked_until.get(c, 0) <= now] or list(CLIENTS)
+            for i, cid in enumerate(order):
+                r = await client.post(
+                    URL, params={"client": cid, "sl": sl, "tl": tl, "dt": "t"}, data={"q": q}
                 )
-                if r.status_code == 429 and i < len(CLIENTS) - 1:
-                    continue
+                if r.status_code == 429:
+                    _blocked_until[cid] = time.monotonic() + CLIENT_BACKOFF_S
+                    if i < len(order) - 1:
+                        continue
                 break
             r.raise_for_status()
             try:

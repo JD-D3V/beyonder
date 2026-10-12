@@ -53,3 +53,13 @@ def _no_background_network(monkeypatch):
     monkeypatch.setattr(settings, "mt_provider", "off")
     monkeypatch.setattr(settings, "auto_covers", False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_google_client_backoff():
+    """The provider remembers captcha'd client ids process-wide; tests start clean."""
+    from app.mt import google_free
+
+    google_free._blocked_until.clear()
+    yield
+    google_free._blocked_until.clear()
