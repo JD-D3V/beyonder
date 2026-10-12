@@ -8,7 +8,9 @@
 
 import { API_BASE, type GlossaryEntry } from "./api";
 
-export type WebMode = "browser" | "server";
+// "download": the on-device translator exists but its language pack must be
+// fetched from a click (Translator.create needs a user gesture).
+export type WebMode = "browser" | "server" | "download";
 
 export interface WebProgress {
   done: number;
@@ -21,6 +23,8 @@ export interface WebTranslateOpts {
   chapter?: number;
   // Cache namespace, e.g. `${novelId}:${idx}`. Omit to skip the cache.
   cachePrefix?: string;
+  // Source language of the book (default zh; only Chinese is supported).
+  source?: string;
 }
 
 // Minimal types for the Translator API, which is not in the TS DOM lib yet.
@@ -60,22 +64,69 @@ async function serverAvailable(): Promise<boolean> {
 }
 
 let availability: Promise<WebMode | null> | null = null;
+let availabilityAt = 0;
+const NULL_TTL_MS = 60_000;
+
+export function resetWebAvailability(): void {
+  availability = null;
+}
 
 export function webTranslateAvailable(): Promise<WebMode | null> {
-  if (!availability) {
-    availability = (async () => {
-      const T = translatorApi();
-      if (T) {
-        try {
-          if ((await T.availability(LANGS)) !== "unavailable") return "browser";
-        } catch {
-          // fall through to the server
-        }
+  if (availability && Date.now() - availabilityAt < NULL_TTL_MS) return availability;
+  const p = (async (): Promise<WebMode | null> => {
+    const T = translatorApi();
+    if (T) {
+      try {
+        const a = await T.availability(LANGS);
+        if (a === "available") return "browser";
+        if (a === "downloadable" || a === "downloading") return "download";
+      } catch {
+        // fall through to the server
       }
-      return (await serverAvailable()) ? "server" : null;
-    })();
+    }
+    return (await serverAvailable()) ? "server" : null;
+  })();
+  availability = p;
+  availabilityAt = Date.now();
+  // A positive answer is kept for the session; a null one only for a minute.
+  p.then(
+    (m) => {
+      if (m !== null) availabilityAt = Infinity;
+    },
+    () => {
+      if (availability === p) availability = null;
+    },
+  );
+  return p;
+}
+
+/**
+ * Fetch the on-device language pack. Call this synchronously from a click
+ * handler: Translator.create needs transient user activation.
+ */
+export function downloadLanguagePack(onPct?: (pct: number) => void): Promise<void> {
+  const T = translatorApi();
+  if (!T) return Promise.reject(new Error("Browser translation is not available"));
+  onDownload = onPct ?? null;
+  const created = getTranslator(T); // create() is invoked synchronously here
+  return created.then(
+    () => {
+      onDownload = null;
+      resetWebAvailability();
+    },
+    (e) => {
+      onDownload = null;
+      throw new Error(friendlyError(e));
+    },
+  );
+}
+
+function friendlyError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : "";
+  if (/not available|desktop Chrome|busy|failed|language pack/i.test(msg) && msg.length < 120) {
+    return msg;
   }
-  return availability;
+  return "Free translation didn't work in this browser. Try again, or translate with AI.";
 }
 
 /** Paragraphs of source text: split on blank lines, empties dropped. */
@@ -167,6 +218,7 @@ function chunkLong(p: string): string[] {
 async function viaServer(
   paras: string[],
   progress: (p: WebProgress) => void,
+  source: string,
 ): Promise<string[]> {
   // Flatten to chunks, translate in batches, then stitch paragraphs back.
   const chunks: string[] = [];
@@ -193,7 +245,7 @@ async function viaServer(
     const res = await fetch(`${API_BASE}/mt/translate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: batch }),
+      body: JSON.stringify({ texts: batch, source }),
     });
     if (!res.ok) {
       throw new Error(
@@ -287,20 +339,29 @@ export async function webTranslate(
     const hit = await cacheGet(key);
     if (hit && hit.length === paragraphs.length) return hit;
   }
+  const source = opts.source || "zh";
+  if (!source.toLowerCase().startsWith("zh")) {
+    throw new Error("Free translation supports Chinese books only");
+  }
   const mode = await webTranslateAvailable();
   if (!mode) throw new Error("Free translation needs desktop Chrome");
+  if (mode === "download") throw new Error("Download the language pack first");
   const prepared = paragraphs.map((p) => applyGlossary(p, glossary, opts.chapter));
   let out: string[];
-  if (mode === "browser") {
-    try {
-      out = await viaBrowser(prepared, progress);
-    } catch (e) {
-      // e.g. the language pack needs a click to download: use the proxy if any.
-      if (!(await serverAvailable())) throw e;
-      out = await viaServer(prepared, progress);
+  try {
+    if (mode === "browser") {
+      try {
+        out = await viaBrowser(prepared, progress);
+      } catch (e) {
+        // e.g. the language pack went away: use the proxy if any.
+        if (!(await serverAvailable())) throw e;
+        out = await viaServer(prepared, progress, source);
+      }
+    } else {
+      out = await viaServer(prepared, progress, source);
     }
-  } else {
-    out = await viaServer(prepared, progress);
+  } catch (e) {
+    throw new Error(friendlyError(e));
   }
   if (key) await cacheSet(key, out);
   return out;

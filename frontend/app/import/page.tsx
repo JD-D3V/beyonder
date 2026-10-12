@@ -17,6 +17,15 @@ export default function ImportPage() {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
+  // Set false on unmount so a running import poll stops.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
   // Only admins can publish; everyone else's imports are private to them.
   const [isAdmin, setIsAdmin] = useState(false);
   const [visibility, setVisibility] = useState<Visibility>("private");
@@ -82,16 +91,25 @@ export default function ImportPage() {
         });
         setProgress({ done: 0, total: 0 });
         // Poll until the server has fetched every chapter.
+        const deadline = Date.now() + 30 * 60 * 1000;
+        let found: number | null = null;
         for (;;) {
           await new Promise((r) => setTimeout(r, 1500));
+          if (!alive.current) return;
+          if (Date.now() > deadline) {
+            throw new Error("The import is taking too long. Check My imports later.");
+          }
           const job = await siteApi.importJob(job_id);
+          if (!alive.current) return;
           setProgress({ done: job.done, total: job.total });
           if (job.status === "failed") throw new Error(job.error || "The import failed.");
-          if (job.status === "done" && job.novel_id != null) {
-            novelId = job.novel_id;
+          if (job.status === "done") {
+            found = job.novel_id;
             break;
           }
         }
+        if (found == null) throw new Error("The import finished but no book was created.");
+        novelId = found;
       } else if (mode === "file") {
         if (!file) throw new Error("Choose a .txt, .md or .epub file first.");
         const res = await api.uploadFile(file, {

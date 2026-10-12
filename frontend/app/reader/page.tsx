@@ -51,6 +51,8 @@ import {
 
 import {
   splitParagraphs,
+  downloadLanguagePack,
+  resetWebAvailability,
   webTranslate,
   webTranslateAvailable,
   type WebMode,
@@ -156,7 +158,13 @@ function ReaderInner() {
   const [view, setView] = useState<View>("ai");
   // Which translation "Both" sits beside.
   const [lastTrans, setLastTrans] = useState<"ai" | "web">("ai");
-  const [webMode, setWebMode] = useState<WebMode | null | undefined>(undefined);
+  const [webModeRaw, setWebMode] = useState<WebMode | null | undefined>(undefined);
+  const [packNote, setPackNote] = useState<string | null>(null);
+  // Free translation covers Chinese books only.
+  const isZh = !novel || novel.source_lang.toLowerCase().startsWith("zh");
+  const isZhRef = useRef(true);
+  isZhRef.current = isZh;
+  const webMode = isZh ? webModeRaw : null;
   const [web, setWeb] = useState<Record<number, WebState>>({});
   const [glossReady, setGlossReady] = useState(false);
   const webStarted = useRef<Set<number>>(new Set());
@@ -229,9 +237,9 @@ function ReaderInner() {
         if (!isCurrent()) return;
         setChapter(c);
         // No AI translation yet: open the free web translation instead.
-        const v = c.translation ? "ai" : "web";
+        const v = c.translation ? "ai" : isZhRef.current ? "web" : "source";
         setView(v);
-        setLastTrans(v);
+        setLastTrans(v === "source" ? "ai" : v);
         return c;
       } catch (e) {
         if (!isCurrent()) return;
@@ -286,6 +294,28 @@ function ReaderInner() {
   useEffect(() => {
     webTranslateAvailable().then(setWebMode);
   }, []);
+
+  // A non-Chinese book has no Web view: fall back to the source text.
+  useEffect(() => {
+    if (isZh) return;
+    if (view === "web") setView("source");
+    if (lastTrans === "web") setLastTrans("ai");
+  }, [isZh, view, lastTrans]);
+
+  function downloadPack() {
+    // Translator.create must start inside this click handler.
+    setPackNote("Downloading language pack...");
+    downloadLanguagePack((pct) =>
+      setPackNote(`Downloading language pack ${Math.round(pct * 100)}%`),
+    ).then(
+      () => {
+        setPackNote(null);
+        resetWebAvailability();
+        setWebMode("browser");
+      },
+      (e) => setPackNote(errorText(e)),
+    );
+  }
 
   function resetStream(root: number) {
     streamGen.current += 1;
@@ -736,12 +766,13 @@ function ReaderInner() {
             status: "loading",
             note: p.note ?? `Translating ${p.done}/${p.total}`,
           }),
-        { chapter: c.idx, cachePrefix: `${novelId}:${c.idx}` },
+        { chapter: c.idx, cachePrefix: `${novelId}:${c.idx}`, source: novel?.source_lang },
       );
       const title =
         c.title && !c.title_en
           ? webTranslate([c.title], glossaryRef.current, undefined, {
               chapter: c.idx,
+              source: novel?.source_lang,
               cachePrefix: `${novelId}:${c.idx}:title`,
             })
               .then((t) => t[0] ?? null)
@@ -813,11 +844,24 @@ function ReaderInner() {
   // The chapter text in the current view.
   // The free web translation of a chapter, or why there is none yet.
   function renderWeb(c: ChapterDetail) {
+    if (!isZh) {
+      return <p className="small muted">Free translation supports Chinese books only.</p>;
+    }
     if (webMode === undefined) return <p className="small muted">Checking free translation...</p>;
     if (webMode === null) {
       return (
         <p className="small muted">
           Free translation needs desktop Chrome — or translate with AI.
+        </p>
+      );
+    }
+    if (webMode === "download") {
+      return (
+        <p className="small muted">
+          <button className="secondary" onClick={downloadPack} disabled={packNote?.startsWith("Downloading")}>
+            Download language pack
+          </button>{" "}
+          {packNote ?? "One-time download so Chrome can translate on this device."}
         </p>
       );
     }
@@ -873,7 +917,33 @@ function ReaderInner() {
         </div>
       );
     }
-    if (v === "web") return renderWeb(c);
+    if (v === "web") {
+      const w = web[c.idx];
+      const unavailable =
+        !isZh || webMode === null || webMode === "download" || w?.status === "error";
+      if (!unavailable) return renderWeb(c);
+      // Say why there is no translation, then fall back to the source text.
+      return (
+        <>
+          {renderWeb(c)}
+          <div className="prose source reader-text">
+            <SourceText text={c.source_text} />
+          </div>
+        </>
+      );
+    }
+    if (v === "ai" && !c.translation) {
+      return (
+        <>
+          <p className="small muted">
+            No AI translation yet. Translate it with AI above, or switch the view to Source.
+          </p>
+          <div className="prose source reader-text">
+            <SourceText text={c.source_text} />
+          </div>
+        </>
+      );
+    }
     if (v === "ai" && c.translation) {
       return (
         <div className="prose reader-text">
@@ -1022,6 +1092,7 @@ function ReaderInner() {
           onClose={() => setShowSettings(false)}
           view={view}
           onViewChange={changeView}
+          webAvailable={isZh}
         />
       )}
 

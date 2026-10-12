@@ -292,12 +292,15 @@ export default function ReaderSettings({
   onClose,
   view,
   onViewChange,
+  webAvailable = true,
 }: {
   prefs: ReaderPrefs;
   onChange: (next: ReaderPrefs) => void;
   onClose: () => void;
   view?: View;
   onViewChange?: (v: View) => void;
+  // Free web translation only supports Chinese books.
+  webAvailable?: boolean;
 }) {
   const [tab, setTab] = useState<"display" | "settings">("display");
   const [advanced, setAdvanced] = useState(false);
@@ -472,7 +475,7 @@ export default function ReaderSettings({
                   value={view}
                   options={[
                     { value: "ai", label: "AI" },
-                    { value: "web", label: "Web" },
+                    ...(webAvailable ? [{ value: "web" as const, label: "Web" }] : []),
                     { value: "source", label: "Source" },
                     { value: "both", label: "Both" },
                   ]}
