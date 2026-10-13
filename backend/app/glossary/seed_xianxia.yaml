@@ -1,0 +1,126 @@
+# Xianxia/cultivation glossary seed. Each entry: source, target, kind.
+# kind: character|sect|technique|realm|item|other
+# optional exclude: longer strings in which the term must not match
+- {source: 炼气, target: "Qi Refining", kind: realm}
+- {source: 炼气期, target: "Qi Refining Stage", kind: realm}
+- {source: 筑基, target: "Foundation Establishment", kind: realm}
+- {source: 筑基期, target: "Foundation Establishment Stage", kind: realm}
+- {source: 金丹, target: "Golden Core", kind: realm}
+- {source: 金丹期, target: "Golden Core Stage", kind: realm}
+- {source: 元婴, target: "Nascent Soul", kind: realm}
+- {source: 元婴期, target: "Nascent Soul Stage", kind: realm}
+- {source: 化神, target: "Spirit Severing", kind: realm}
+- {source: 化神期, target: "Spirit Severing Stage", kind: realm}
+- {source: 大乘, target: "Mahayana", kind: realm}
+- {source: 大乘期, target: "Mahayana Stage", kind: realm}
+- {source: 渡劫, target: "Tribulation Transcendence", kind: realm}
+- {source: 渡劫期, target: "Tribulation Transcendence Stage", kind: realm}
+- {source: 凝气, target: "Qi Condensation", kind: realm}
+- {source: 练气, target: "Qi Refining", kind: realm}
+- {source: 结丹, target: "Core Formation", kind: realm}
+- {source: 结婴, target: "Nascent Soul Formation", kind: realm}
+- {source: 大罗金仙, target: "Daluo Golden Immortal", kind: realm}
+- {source: 师尊, target: "Master", kind: other}
+- {source: 师父, target: "Master", kind: other}
+- {source: 师祖, target: "Grand Master", kind: other}
+- {source: 师兄, target: "Senior Brother", kind: other}
+- {source: 师姐, target: "Senior Sister", kind: other}
+- {source: 师弟, target: "Junior Brother", kind: other}
+- {source: 师妹, target: "Junior Sister", kind: other}
+- {source: 师叔, target: "Uncle Master", kind: other}
+- {source: 师伯, target: "Senior Uncle Master", kind: other}
+- {source: 师侄, target: "Junior Nephew", kind: other}
+- {source: 师兄弟, target: "Fellow Disciples", kind: other}
+- {source: 长老, target: "Elder", kind: other}
+- {source: 大长老, target: "Grand Elder", kind: other}
+- {source: 太上长老, target: "Supreme Elder", kind: other}
+- {source: 宗主, target: "Sect Master", kind: other}
+- {source: 掌门, target: "Sect Leader", kind: other}
+- {source: 门主, target: "Gate Master", kind: other}
+- {source: 阁主, target: "Pavilion Master", kind: other}
+- {source: 殿主, target: "Hall Master", kind: other}
+- {source: 峰主, target: "Peak Master", kind: other}
+- {source: 堂主, target: "Hall Chief", kind: other}
+- {source: 盟主, target: "Alliance Leader", kind: other}
+- {source: 家主, target: "Clan Head", kind: other}
+- {source: 族长, target: "Clan Chief", kind: other}
+- {source: 少主, target: "Young Lord", kind: other}
+- {source: 圣子, target: "Saintly Son", kind: other}
+- {source: 圣女, target: "Saintess", kind: other}
+- {source: 老祖, target: "Ancestor", kind: other, exclude: [老祖宗]}
+- {source: 祖师, target: "Patriarch", kind: other}
+- {source: 前辈, target: "Senior", kind: other}
+- {source: 晚辈, target: "Junior", kind: other}
+- {source: 道友, target: "Fellow Daoist", kind: other}
+- {source: 道兄, target: "Daoist Brother", kind: other}
+- {source: 公子, target: "Young Master", kind: other, exclude: [公子哥]}
+- {source: 少爷, target: "Young Master", kind: other}
+- {source: 本座, target: "This Seat", kind: other}
+- {source: 本尊, target: "This Venerable One", kind: other}
+- {source: 老朽, target: "This Old One", kind: other}
+- {source: 贫道, target: "This Poor Daoist", kind: other}
+- {source: 弟子, target: "Disciple", kind: other, exclude: [弟子规]}
+- {source: 内门弟子, target: "Inner Sect Disciple", kind: other}
+- {source: 外门弟子, target: "Outer Sect Disciple", kind: other}
+- {source: 核心弟子, target: "Core Disciple", kind: other}
+- {source: 亲传弟子, target: "Personal Disciple", kind: other}
+- {source: 散修, target: "Rogue Cultivator", kind: other}
+- {source: 修士, target: "Cultivator", kind: other}
+- {source: 修仙者, target: "Immortal Cultivator", kind: other}
+- {source: 修炼, target: "Cultivation", kind: other}
+- {source: 功法, target: "Cultivation Technique", kind: other}
+- {source: 灵气, target: "Spiritual Qi", kind: other}
+- {source: 灵力, target: "Spiritual Power", kind: other}
+- {source: 真气, target: "True Qi", kind: other}
+- {source: 真元, target: "True Essence", kind: other}
+- {source: 内力, target: "Internal Energy", kind: other}
+- {source: 丹田, target: "Dantian", kind: other}
+- {source: 经脉, target: "Meridians", kind: other}
+- {source: 气海, target: "Sea of Qi", kind: other}
+- {source: 识海, target: "Sea of Consciousness", kind: other}
+- {source: 神识, target: "Divine Sense", kind: other}
+- {source: 元神, target: "Primordial Spirit", kind: other}
+- {source: 灵根, target: "Spiritual Root", kind: other}
+- {source: 天劫, target: "Heavenly Tribulation", kind: other}
+- {source: 雷劫, target: "Lightning Tribulation", kind: other}
+- {source: 闭关, target: "Seclusion", kind: other}
+- {source: 走火入魔, target: "Qi Deviation", kind: other}
+- {source: 洞府, target: "Cave Abode", kind: other}
+- {source: 秘境, target: "Secret Realm", kind: other}
+- {source: 魔道, target: "Demonic Path", kind: other}
+- {source: 正道, target: "Righteous Path", kind: other}
+- {source: 魔修, target: "Demonic Cultivator", kind: other}
+- {source: 妖兽, target: "Demonic Beast", kind: other}
+- {source: 妖修, target: "Demon Cultivator", kind: other}
+- {source: 灵兽, target: "Spirit Beast", kind: other}
+- {source: 夺舍, target: "Soul Seizure", kind: other}
+- {source: 双修, target: "Dual Cultivation", kind: other}
+- {source: 炉鼎, target: "Cauldron", kind: other}
+- {source: 法宝, target: "Magic Treasure", kind: item}
+- {source: 法器, target: "Magic Tool", kind: item}
+- {source: 灵器, target: "Spirit Tool", kind: item}
+- {source: 灵宝, target: "Spirit Treasure", kind: item}
+- {source: 仙器, target: "Immortal Artifact", kind: item}
+- {source: 飞剑, target: "Flying Sword", kind: item}
+- {source: 灵石, target: "Spirit Stone", kind: item}
+- {source: 仙石, target: "Immortal Stone", kind: item}
+- {source: 储物戒指, target: "Storage Ring", kind: item}
+- {source: 储物袋, target: "Storage Pouch", kind: item}
+- {source: 乾坤袋, target: "Cosmos Bag", kind: item}
+- {source: 丹药, target: "Pill", kind: item}
+- {source: 灵丹, target: "Spirit Pill", kind: item}
+- {source: 灵药, target: "Spirit Medicine", kind: item}
+- {source: 灵草, target: "Spirit Herb", kind: item}
+- {source: 符箓, target: "Talisman", kind: item}
+- {source: 玉简, target: "Jade Slip", kind: item}
+- {source: 丹炉, target: "Pill Furnace", kind: item}
+- {source: 炼丹, target: "Alchemy", kind: technique}
+- {source: 炼器, target: "Artifact Refining", kind: technique}
+- {source: 剑诀, target: "Sword Art", kind: technique}
+- {source: 心法, target: "Mental Method", kind: technique}
+- {source: 神通, target: "Divine Ability", kind: technique}
+- {source: 秘术, target: "Secret Technique", kind: technique}
+- {source: 御剑飞行, target: "Sword Flight", kind: technique}
+- {source: 宗门, target: "Sect", kind: sect}
+- {source: 修仙界, target: "Cultivation World", kind: other}
+- {source: 修真界, target: "Cultivation World", kind: other}

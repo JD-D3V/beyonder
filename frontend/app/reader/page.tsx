@@ -2,136 +2,837 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import {
+  type CSSProperties,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import ChapterComments from "../../components/ChapterComments";
+import GlossaryText from "../../components/GlossaryText";
+import {
+  IconBookmark,
+  IconBookmarkCheck,
+  IconChevronLeft,
+  IconChevronRight,
+  IconFlag,
+  IconLoaderCircle,
+  IconMessageCircleQuestionMark,
+  IconSettings,
+  IconSparkles,
+  IconType,
+} from "../../components/icons";
+import ReaderSettings from "../../components/ReaderSettings";
+import TtsControls from "../../components/TtsControls";
 import {
   api,
+  ApiError,
   AskOut,
   ChapterDetail,
   ChapterRow,
   CRITIC_MAX_CHARS,
+  displayTitle,
+  errorText,
+  GlossaryEntry,
+  KeyRequiredError,
   Novel,
 } from "../../lib/api";
+import { siteApi, type MtStatus } from "../../lib/api-site";
+import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
+import {
+  DEFAULT_PREFS,
+  FONT_STACKS,
+  loadPrefs,
+  ReaderPrefs,
+  savePrefs,
+} from "../../lib/readerPrefs";
 
-type View = "translation" | "source" | "both";
+import {
+  splitParagraphs,
+  downloadLanguagePack,
+  resetWebAvailability,
+  webTranslate,
+  webTranslateAvailable,
+  type WebMode,
+} from "../../lib/webTranslate";
+
+// ai: the saved AI translation. web: free machine translation done in this
+// browser (never saved). both: source beside whichever translation is shown.
+type View = "google" | "gemini" | "source" | "both";
+const VIEW_KEY = "beyonder.reader.view";
+
+// Free web translation of one chapter, kept in memory only.
+interface WebState {
+  status: "loading" | "done" | "error";
+  note?: string;
+  paras?: string[];
+  title?: string | null;
+  error?: string;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// A chapter appended below the root one in infinite mode.
+interface StreamItem {
+  idx: number;
+  chapter: ChapterDetail;
+  err: string | null;
+  busy: boolean;
+  progress: string | null;
+  keyNeeded: boolean;
+  keyRejected: boolean;
+}
+
+// Maps a translate failure onto UI state. reload: the chapter was already
+// translated elsewhere, so just refetch it.
+function classifyTranslateError(e: unknown): {
+  err?: string;
+  keyNeeded?: boolean;
+  keyRejected?: boolean;
+  reload?: boolean;
+} {
+  if (e instanceof KeyRequiredError) return { keyNeeded: true };
+  if (e instanceof ApiError && e.code === "already_translated") return { reload: true };
+  if (e instanceof ApiError && e.code === "llm_rate_limited")
+    return { err: "The AI provider is rate-limiting your key, try again in a minute." };
+  if (e instanceof ApiError && e.code === "llm_key_invalid") return { keyRejected: true };
+  return { err: errorText(e) };
+}
+
+// Source text as paragraphs, split on blank lines like the translation.
+function SourceText({ text }: { text: string }) {
+  const paras = text.split(/\n[ \t]*\n+/).filter((p) => p.trim() !== "");
+  return (
+    <>
+      {paras.map((p, i) => (
+        <p key={i}>{p}</p>
+      ))}
+    </>
+  );
+}
+
+// Layout effects warn when rendered on the server; the static export
+// prerenders this page, so only use one in the browser.
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+function isTyping(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName;
+  return (
+    tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable
+  );
+}
 
 function ReaderInner() {
   const params = useSearchParams();
   const router = useRouter();
   const novelId = Number(params.get("novel") || "0");
-  const chapterIdx = Number(params.get("ch") || "0");
+  const urlIdx = Number(params.get("ch") || "0");
+
+  // chapterIdx is the chapter that roots the page. In infinite mode the URL
+  // `ch` param follows the chapter being read (history.replaceState); those
+  // echoes must not re-root the page, so they are remembered and ignored.
+  const replaced = useRef<Set<number>>(new Set());
+  const [prevUrl, setPrevUrl] = useState(urlIdx);
+  const [chapterIdx, setRoot] = useState(urlIdx);
+  if (urlIdx !== prevUrl) {
+    setPrevUrl(urlIdx);
+    if (!replaced.current.has(urlIdx)) {
+      replaced.current.clear();
+      setRoot(urlIdx);
+    }
+  }
+
+  const [session, setSession] = useState<Session | null>(null);
+  const [prefs, setPrefs] = useState<ReaderPrefs>(DEFAULT_PREFS);
+  const [showSettings, setShowSettings] = useState(false);
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [chapters, setChapters] = useState<ChapterRow[]>([]);
   const [chapter, setChapter] = useState<ChapterDetail | null>(null);
-  const [view, setView] = useState<View>("translation");
+  const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
+  const [flagCount, setFlagCount] = useState(0);
+  const [onReading, setOnReading] = useState(false);
+  const [view, setView] = useState<View>("google");
+  // Which translation "Both" sits beside.
+  const [lastTrans, setLastTrans] = useState<"gemini" | "google">("gemini");
+  const [mt, setMt] = useState<MtStatus | null>(null);
+  const [webModeRaw, setWebMode] = useState<WebMode | null | undefined>(undefined);
+  const [packNote, setPackNote] = useState<string | null>(null);
+  // Free translation covers Chinese books only.
+  const isZh = !novel || novel.source_lang.toLowerCase().startsWith("zh");
+  const isZhRef = useRef(true);
+  isZhRef.current = isZh;
+  const webMode = isZh ? webModeRaw : null;
+  const [web, setWeb] = useState<Record<number, WebState>>({});
+  const [glossReady, setGlossReady] = useState(false);
+  const webStarted = useRef<Set<number>>(new Set());
+  const webGen = useRef(0);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [newTerms, setNewTerms] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [keyNeeded, setKeyNeeded] = useState(false);
+  const [keyRejected, setKeyRejected] = useState(false);
 
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<AskOut | null>(null);
   const [asking, setAsking] = useState(false);
+  const [askErr, setAskErr] = useState<string | null>(null);
+  const [askKeyNeeded, setAskKeyNeeded] = useState(false);
+  const [askKeyRejected, setAskKeyRejected] = useState(false);
 
-  const loadChapter = useCallback(async () => {
-    if (!novelId) return;
-    setErr(null);
-    try {
-      const c = await api.getChapter(novelId, chapterIdx);
-      setChapter(c);
-      // Nothing to show in translation view until one exists.
-      setView(c.translation ? "translation" : "source");
-    } catch (e) {
-      setErr(String(e));
-      setChapter(null);
-    }
-  }, [novelId, chapterIdx]);
+  // Infinite mode: chapters appended after the root one.
+  const infinite = prefs.readerType === "infinite";
+  const [stream, setStream] = useState<StreamItem[]>([]);
+  const [activeIdx, setActiveIdx] = useState(chapterIdx);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreErr, setMoreErr] = useState<string | null>(null);
+  const streamRef = useRef<StreamItem[]>([]);
+  streamRef.current = stream;
+  const streamGen = useRef(0);
+  const fetchingMore = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const articleRef = useRef<HTMLElement | null>(null);
+  const curIdx = infinite ? activeIdx : chapterIdx;
+
+  const signedIn = session !== null;
+  const isAdmin = Boolean(session?.user.is_admin);
+
+  // Prefs come from localStorage, which the prerendered HTML cannot know.
+  // Reading them in a layout effect applies them before the first paint, so
+  // there is no flash of the wrong theme and no hydration mismatch (the
+  // server and first client render both use DEFAULT_PREFS).
+  useIsoLayoutEffect(() => {
+    setPrefs(loadPrefs());
+  }, []);
+
+  useEffect(() => {
+    const sync = () => setSession(getSession());
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  function changePrefs(next: ReaderPrefs) {
+    setPrefs(next);
+    savePrefs(next);
+  }
+
+  // Bumped whenever the chapter changes or the page unmounts; a running
+  // translate loop holds the token it started with and stops when stale.
+  const runToken = useRef(0);
+
+  const loadChapter = useCallback(
+    async (isCurrent: () => boolean = () => true) => {
+      if (!novelId) return;
+      try {
+        // For signed-in readers this also advances server-side progress.
+        const c = await api.getChapter(novelId, chapterIdx);
+        if (!isCurrent()) return;
+        setChapter(c);
+        return c;
+      } catch (e) {
+        if (!isCurrent()) return;
+        setErr(errorText(e));
+        setChapter(null);
+      }
+    },
+    [novelId, chapterIdx],
+  );
 
   useEffect(() => {
     if (!novelId) return;
-    api.getNovel(novelId).then(setNovel).catch((e) => setErr(String(e)));
+    api.getNovel(novelId).then(setNovel).catch((e) => setErr(errorText(e)));
     api.listChapters(novelId).then(setChapters).catch(() => undefined);
   }, [novelId]);
 
-  useEffect(() => {
-    loadChapter();
-  }, [loadChapter]);
+  // Each loader keeps a sequence number so only the newest response lands:
+  // a fetch issued before the chapter load (old progress) can never overwrite
+  // the one issued after it.
+  const glossSeq = useRef(0);
+  const loadGlossary = useCallback(() => {
+    if (!novelId) return;
+    const n = ++glossSeq.current;
+    api
+      .glossary(novelId)
+      .then((g) => {
+        if (n !== glossSeq.current) return;
+        setGlossary(g);
+        setGlossReady(true);
+      })
+      .catch(() => {
+        if (n !== glossSeq.current) return;
+        setGlossary([]);
+        setGlossReady(true);
+      });
+  }, [novelId]);
 
-  // Reading position doubles as the spoiler cap for questions.
+  function changeView(v: View) {
+    setView(v);
+    if (v === "gemini" || v === "google") setLastTrans(v);
+    try {
+      window.localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // storage unavailable: the choice just isn't remembered
+    }
+  }
+
+  // Remember the last view per browser (localStorage is unknown at prerender).
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(VIEW_KEY);
+      if (v === "google" || v === "gemini" || v === "source" || v === "both") {
+        setView(v);
+        if (v === "gemini" || v === "google") setLastTrans(v);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Machine translation progress; polled while the server is still working.
   useEffect(() => {
     if (!novelId) return;
+    let dead = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () =>
+      siteApi
+        .mtStatus(novelId)
+        .then((s) => {
+          if (dead) return;
+          setMt(s);
+          if (s.status === "queued" || s.status === "running") timer = setTimeout(tick, 15000);
+        })
+        .catch(() => undefined);
+    tick();
+    return () => {
+      dead = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [novelId]);
+
+  // The translation a view shows for a chapter. "Both" follows the last pick,
+  // and uses the web one when the chapter has no AI translation.
+  function effTrans(c: ChapterDetail, v: View): "mt" | "web" | "ai" | null {
+    const google = c.translation_mt ? "mt" : "web";
+    if (v === "gemini") return "ai";
+    if (v === "google") return google;
+    if (v === "both") return lastTrans === "gemini" && c.translation ? "ai" : google;
+    return null;
+  }
+
+  // Heading for a chapter in a view: the matching translation's title.
+  function titleFor(c: ChapterDetail, v: View) {
+    const t = effTrans(c, v);
+    const en =
+      t === "mt" ? c.title_mt || c.title_en : t === "ai" ? c.title_en : c.title_en || c.title_mt;
+    return displayTitle(c.title, en);
+  }
+
+  useEffect(() => {
+    webTranslateAvailable().then(setWebMode);
+  }, []);
+
+  function downloadPack() {
+    // Translator.create must start inside this click handler.
+    setPackNote("Downloading language pack...");
+    downloadLanguagePack((pct) =>
+      setPackNote(`Downloading language pack ${Math.round(pct * 100)}%`),
+    ).then(
+      () => {
+        setPackNote(null);
+        resetWebAvailability();
+        setWebMode("browser");
+      },
+      (e) => setPackNote(errorText(e)),
+    );
+  }
+
+  function resetStream(root: number) {
+    streamGen.current += 1;
+    fetchingMore.current = false;
+    streamRef.current = [];
+    setStream([]);
+    setLoadingMore(false);
+    setMoreErr(null);
+    setActiveIdx(root);
+  }
+
+  const flagSeq = useRef(0);
+  const loadFlags = useCallback(() => {
+    if (!novelId) return;
+    const n = ++flagSeq.current;
     api
-      .setProgress({ novel_id: novelId, current_chapter: chapterIdx })
-      .catch(() => undefined);
+      .flags(novelId, "open", undefined, chapterIdx)
+      .then((f) => n === flagSeq.current && setFlagCount(f.length))
+      .catch(() => n === flagSeq.current && setFlagCount(0));
   }, [novelId, chapterIdx]);
 
-  async function translateThis() {
+  useEffect(() => {
+    const token = ++runToken.current;
+    // Per-chapter transient state starts clean; a stale loop is cancelled.
+    setNewTerms(null);
+    setAnswer(null);
+    setAskErr(null);
+    setAskKeyNeeded(false);
+    setAskKeyRejected(false);
+    setKeyNeeded(false);
+    setKeyRejected(false);
+    setErr(null);
+    setBusy(false);
+    setProgress(null);
+    webGen.current += 1;
+    webStarted.current.clear();
+    setWeb({});
+    setGlossReady(false);
+    resetStream(chapterIdx);
+    const isCurrent = () => runToken.current === token;
+    // Opening a chapter advances server-side progress, which widens what the
+    // glossary and flags may show: fetch them again once the load is done.
+    loadChapter(isCurrent).then(() => {
+      if (!isCurrent()) return;
+      loadGlossary();
+      loadFlags();
+    });
+    return () => {
+      // Chapter change or unmount: invalidate any in-flight run.
+      if (runToken.current === token) runToken.current += 1;
+    };
+  }, [loadChapter, loadGlossary, loadFlags]);
+
+  // Signed-out readers keep their place in this browser.
+  useEffect(() => {
+    if (!novelId) return;
+    try {
+      const key = "beyonder.anonProgress";
+      const cur = JSON.parse(window.localStorage.getItem(key) || "{}");
+      cur[String(novelId)] = curIdx;
+      window.localStorage.setItem(key, JSON.stringify(cur));
+    } catch {
+      // storage blocked; nothing to do
+    }
+  }, [novelId, curIdx]);
+
+  // Signing in or out changes the horizon too. Keyed on the session only:
+  // chapter changes are handled by the load effect above.
+  useEffect(() => {
+    loadGlossary();
+    loadFlags();
+  }, [signedIn]);
+
+  useEffect(() => {
+    if (!novelId || !signedIn) {
+      setOnReading(false);
+      return;
+    }
+    api
+      .library()
+      .then((lib) => setOnReading(lib.reading.some((n) => n.id === novelId)))
+      .catch(() => undefined);
+  }, [novelId, signedIn]);
+
+  async function toggleReading() {
+    try {
+      if (onReading) await api.removeFromLibrary(novelId);
+      else await api.setShelf(novelId, "reading");
+      setOnReading(!onReading);
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  }
+
+  // force: admin re-translate of a complete chapter (the server ignores it for
+  // everyone else). It replaces the saved translation for every reader.
+  function applyTitle(en: string | null | undefined) {
+    if (en) setChapter((c) => (c ? { ...c, title_en: en } : c));
+  }
+
+  // The shared translate step loop. Returns the number of new glossary terms,
+  // or null when cancelled (live() went false). Throws on API errors.
+  async function runTranslate(
+    idx: number,
+    charCount: number,
+    force: boolean,
+    live: () => boolean,
+    onProgress: (s: string | null) => void,
+    onTitle: (en: string | null | undefined) => void,
+  ): Promise<number | null> {
+    let added = 0;
+    if (charCount <= CRITIC_MAX_CHARS) {
+      const r = await api.translate({
+        novel_id: novelId,
+        chapter_idx: idx,
+        ...(force ? { force: true } : {}),
+      });
+      added += r.new_terms?.length ?? 0;
+      onTitle(r.title_en);
+      return added;
+    }
+    // Long chapter: resumable, critic-free passes until complete.
+    let stalls = 0;
+    // force resets the saved translation, so send it on the first call only.
+    let first = true;
+    for (;;) {
+      if (!live()) return null;
+      const r = await api.translateStep({
+        novel_id: novelId,
+        chapter_idx: idx,
+        ...(force && first ? { force: true } : {}),
+      });
+      first = false;
+      if (!live()) return null;
+      added += r.new_terms?.length ?? 0;
+      onTitle(r.title_en);
+      if (r.complete) break;
+      if (r.stalled) {
+        stalls += 1;
+        if (stalls > 8) {
+          throw new Error(
+            "The AI provider kept returning unusable output. " +
+              "Progress is saved; resume this later.",
+          );
+        }
+        onProgress("Model returned nothing, retrying...");
+        await sleep(20000);
+      } else {
+        stalls = 0;
+        onProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
+        await sleep(4000); // pace under the 15 req/min free tier
+      }
+      if (!live()) return null;
+    }
+    return added;
+  }
+
+  async function translateThis(force = false) {
     if (!chapter) return;
+    const token = runToken.current;
+    const live = () => runToken.current === token;
     setBusy(true);
     setErr(null);
+    setKeyNeeded(false);
+    setKeyRejected(false);
     setProgress(null);
+    let reload = false;
     try {
-      if (chapter.char_count <= CRITIC_MAX_CHARS) {
-        await api.translate({ novel_id: novelId, chapter_idx: chapterIdx });
-      } else {
-        // Long chapter: resumable, critic-free passes until complete.
-        let stalls = 0;
-        for (;;) {
-          const r = await api.translateStep({
-            novel_id: novelId,
-            chapter_idx: chapterIdx,
-          });
-          if (r.complete) break;
-          if (r.stalled) {
-            stalls += 1;
-            if (stalls > 8) {
-              throw new Error(
-                "Gemini kept returning nothing — likely the free daily quota. " +
-                  "Progress is saved; resume this later.",
-              );
-            }
-            setProgress("Rate-limited, waiting...");
-            await sleep(20000);
-          } else {
-            stalls = 0;
-            setProgress(`Piece ${r.pieces_done}/${r.pieces_total}...`);
-            await sleep(4000); // pace under the 15 req/min free tier
-          }
-        }
-      }
-      await loadChapter();
-      setView("translation");
-      api.listChapters(novelId).then(setChapters).catch(() => undefined);
+      const added = await runTranslate(
+        chapterIdx,
+        chapter.char_count,
+        force,
+        live,
+        setProgress,
+        applyTitle,
+      );
+      if (added === null) return;
+      reload = true;
+      if (live()) setNewTerms(added);
     } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
+      if (!live()) return;
+      const c = classifyTranslateError(e);
+      if (c.keyNeeded) setKeyNeeded(true);
+      else if (c.reload) reload = true;
+      else if (c.keyRejected) setKeyRejected(true);
+      else setErr(c.err ?? errorText(e));
     }
+    if (!live()) return;
+    if (reload) {
+      await loadChapter(live);
+      if (!live()) return;
+      loadGlossary();
+      api.listChapters(novelId).then((c) => live() && setChapters(c)).catch(() => undefined);
+    }
+    setBusy(false);
+    setProgress(null);
+  }
+
+  function patchItem(idx: number, p: (it: StreamItem) => Partial<StreamItem>) {
+    setStream((s) => s.map((it) => (it.idx === idx ? { ...it, ...p(it) } : it)));
+  }
+
+  // Translate a chapter in the infinite stream. Cancelled with the stream.
+  async function translateItem(idx: number) {
+    const item = streamRef.current.find((it) => it.idx === idx);
+    if (!item) return;
+    const token = runToken.current;
+    const gen = streamGen.current;
+    const live = () => runToken.current === token && streamGen.current === gen;
+    patchItem(idx, () => ({
+      busy: true,
+      err: null,
+      keyNeeded: false,
+      keyRejected: false,
+      progress: null,
+    }));
+    let reload = false;
+    try {
+      const added = await runTranslate(
+        idx,
+        item.chapter.char_count,
+        false,
+        live,
+        (s) => live() && patchItem(idx, () => ({ progress: s })),
+        (en) => {
+          if (en && live()) patchItem(idx, (it) => ({ chapter: { ...it.chapter, title_en: en } }));
+        },
+      );
+      if (added === null) return;
+      reload = true;
+    } catch (e) {
+      if (!live()) return;
+      const c = classifyTranslateError(e);
+      if (c.reload) reload = true;
+      else
+        patchItem(idx, () => ({
+          keyNeeded: Boolean(c.keyNeeded),
+          keyRejected: Boolean(c.keyRejected),
+          err: c.err ?? null,
+        }));
+    }
+    if (!live()) return;
+    if (reload) {
+      try {
+        const c = await api.getChapter(novelId, idx);
+        if (!live()) return;
+        patchItem(idx, () => ({ chapter: c }));
+        loadGlossary();
+      } catch (e) {
+        if (!live()) return;
+        patchItem(idx, () => ({ err: errorText(e) }));
+      }
+    }
+    if (!live()) return;
+    patchItem(idx, () => ({ busy: false, progress: null }));
   }
 
   async function ask() {
     if (!question.trim()) return;
     setAsking(true);
     setAnswer(null);
-    setErr(null);
+    setAskErr(null);
+    setAskKeyNeeded(false);
+    setAskKeyRejected(false);
     try {
-      const res = await api.ask({
-        novel_id: novelId,
-        question: question.trim(),
-        current_chapter: chapterIdx,
-      });
+      // The server caps answers at the stored reading progress.
+      const res = await api.ask({ novel_id: novelId, question: question.trim() });
       setAnswer(res);
     } catch (e) {
-      setErr(String(e));
+      if (e instanceof KeyRequiredError) setAskKeyNeeded(true);
+      else if (e instanceof ApiError && e.code === "llm_key_invalid") setAskKeyRejected(true);
+      else if (e instanceof ApiError && e.code === "llm_rate_limited")
+        setAskErr("The AI provider is rate-limiting your key, try again in a minute.");
+      else setAskErr(errorText(e));
     } finally {
       setAsking(false);
     }
   }
 
-  function go(idx: number) {
-    router.push(`/reader?novel=${novelId}&ch=${idx}`);
+  const last = chapters.length ? chapters[chapters.length - 1].idx : chapterIdx;
+  const hasPrev = curIdx > 0;
+  const hasNext = curIdx < last;
+  const lastLoaded = stream.length ? stream[stream.length - 1].idx : chapterIdx;
+  const hasMore = lastLoaded < last;
+
+  // Prev/Next/keyboard jump to a chapter and restart the stream there.
+  const go = useCallback(
+    (idx: number) => {
+      replaced.current.clear();
+      resetStream(idx);
+      setRoot(idx);
+      router.push(`/reader?novel=${novelId}&ch=${idx}`);
+      window.scrollTo({ top: 0 });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [router, novelId],
+  );
+
+  // Keep the key handler's view of position fresh without re-binding.
+  const nav = useRef({ hasPrev, hasNext, curIdx, go });
+  nav.current = { hasPrev, hasNext, curIdx, go };
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (isTyping(e.target)) return;
+      const n = nav.current;
+      if (e.key === "ArrowLeft" && n.hasPrev) n.go(n.curIdx - 1);
+      else if (e.key === "ArrowRight" && n.hasNext) n.go(n.curIdx + 1);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Fetch the next chapter. One request at a time, never one already shown.
+  const loadMore = useCallback(async () => {
+    if (!novelId || fetchingMore.current) return;
+    const cur = streamRef.current;
+    const next = (cur.length ? cur[cur.length - 1].idx : chapterIdx) + 1;
+    if (next > last) return;
+    fetchingMore.current = true;
+    setLoadingMore(true);
+    const token = runToken.current;
+    const gen = streamGen.current;
+    try {
+      // Fetching also advances server-side progress for signed-in readers.
+      const c = await api.getChapter(novelId, next);
+      if (runToken.current !== token || streamGen.current !== gen) return;
+      const item: StreamItem = {
+        idx: next,
+        chapter: c,
+        err: null,
+        busy: false,
+        progress: null,
+        keyNeeded: false,
+        keyRejected: false,
+      };
+      streamRef.current = [...streamRef.current.filter((x) => x.idx !== next), item];
+      setStream(streamRef.current);
+      loadGlossary();
+    } catch (e) {
+      if (runToken.current !== token || streamGen.current !== gen) return;
+      setMoreErr(errorText(e));
+    } finally {
+      if (streamGen.current === gen) {
+        fetchingMore.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, [novelId, chapterIdx, last, loadGlossary]);
+
+  const rootLoaded = chapter !== null;
+  useEffect(() => {
+    if (!infinite || !rootLoaded || !hasMore || moreErr || chapters.length === 0) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "600px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [infinite, rootLoaded, hasMore, moreErr, chapters.length, stream.length, loadingMore, loadMore]);
+
+  // The chapter whose heading last crossed the top is the one being read.
+  useEffect(() => {
+    if (!infinite) return;
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const secs = articleRef.current?.querySelectorAll<HTMLElement>("[data-ch]");
+      if (!secs || secs.length === 0) return;
+      let cur = Number(secs[0].dataset.ch);
+      secs.forEach((el) => {
+        if (el.getBoundingClientRect().top <= 120) cur = Number(el.dataset.ch);
+      });
+      setActiveIdx(cur);
+    };
+    const onScroll = () => {
+      if (!raf) raf = window.requestAnimationFrame(update);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [infinite, stream.length]);
+
+  // Reflect the chapter being read in the URL, keeping path and other params.
+  useEffect(() => {
+    if (!infinite || !rootLoaded) return;
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("ch") === String(activeIdx)) return;
+    u.searchParams.set("ch", String(activeIdx));
+    replaced.current.add(activeIdx);
+    window.history.replaceState(window.history.state, "", u.pathname + u.search + u.hash);
+  }, [infinite, rootLoaded, activeIdx]);
+
+  // Flag marker follows the chapter being read.
+  useEffect(() => {
+    if (!infinite || !novelId || activeIdx === chapterIdx) return;
+    const n = ++flagSeq.current;
+    api
+      .flags(novelId, "open", undefined, activeIdx)
+      .then((f) => n === flagSeq.current && setFlagCount(f.length))
+      .catch(() => n === flagSeq.current && setFlagCount(0));
+  }, [infinite, novelId, activeIdx, chapterIdx]);
+
+  // Leaving infinite mode: single-page view of the chapter being read.
+  const wasInfinite = useRef(infinite);
+  useEffect(() => {
+    if (wasInfinite.current && !infinite) {
+      if (activeIdx !== chapterIdx) setRoot(activeIdx);
+      resetStream(activeIdx);
+      replaced.current.clear();
+    }
+    wasInfinite.current = infinite;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [infinite]);
+
+  // Free web translation for every shown chapter (the root one and, in
+  // infinite mode, the appended ones). Runs once per chapter; results live in
+  // memory (and the local cache) only and are never sent to the server.
+  const glossaryRef = useRef(glossary);
+  glossaryRef.current = glossary;
+  useEffect(() => {
+    if (!webMode || !glossReady || !novelId) return;
+    const shown: ChapterDetail[] = [];
+    if (chapter && chapter.idx === chapterIdx) shown.push(chapter);
+    for (const it of stream) shown.push(it.chapter);
+    for (const c of shown) {
+      if (effTrans(c, view) !== "web" || webStarted.current.has(c.idx)) continue;
+      webStarted.current.add(c.idx);
+      const gen = webGen.current;
+      const setW = (s: WebState) => {
+        if (gen === webGen.current) setWeb((p) => ({ ...p, [c.idx]: s }));
+      };
+      setW({ status: "loading" });
+      const body = webTranslate(
+        splitParagraphs(c.source_text),
+        glossaryRef.current,
+        (p) =>
+          setW({
+            status: "loading",
+            note: p.note ?? `Translating ${p.done}/${p.total}`,
+          }),
+        { chapter: c.idx, cachePrefix: `${novelId}:${c.idx}`, source: novel?.source_lang },
+      );
+      const title =
+        c.title && !c.title_en && !c.title_mt
+          ? webTranslate([c.title], glossaryRef.current, undefined, {
+              chapter: c.idx,
+              source: novel?.source_lang,
+              cachePrefix: `${novelId}:${c.idx}:title`,
+            })
+              .then((t) => t[0] ?? null)
+              .catch(() => null)
+          : Promise.resolve(null);
+      Promise.all([body, title]).then(
+        ([paras, t]) => setW({ status: "done", paras, title: t }),
+        (e) => setW({ status: "error", error: errorText(e) }),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webMode, glossReady, novelId, chapter, chapterIdx, stream, view, lastTrans, web]);
+
+  function retryWeb(idx: number) {
+    webStarted.current.delete(idx);
+    setWeb((p) => {
+      const n = { ...p };
+      delete n[idx];
+      return n;
+    });
   }
 
   if (!novelId) {
@@ -139,151 +840,511 @@ function ReaderInner() {
       <div className="empty">
         <h3>No book chosen</h3>
         <p>
-          Pick one from <Link href="/">the library</Link>.
+          Pick one from <Link href="/">the catalog</Link>.
         </p>
       </div>
     );
   }
 
-  const last = chapters.length ? chapters[chapters.length - 1].idx : chapterIdx;
-  const hasPrev = chapterIdx > 0;
-  const hasNext = chapterIdx < last;
-  const heading =
-    chapter?.title || `Chapter ${chapterIdx + 1}`;
+  const ht = chapter ? titleFor(chapter, view) : { text: "", hover: undefined };
+  const rootWebTitle =
+    chapter && !chapter.title_en && !chapter.title_mt && effTrans(chapter, view) === "web"
+      ? web[chapter.idx]?.title
+      : null;
+  const heading = rootWebTitle || ht.text || `Chapter ${chapterIdx + 1}`;
+  const nvt = novel ? displayTitle(novel.title, novel.title_en) : null;
+  const cssVars: Record<string, string> = {
+    "--r-font": FONT_STACKS[prefs.font],
+    "--r-size": `${prefs.size}px`,
+    "--r-lh": String(prefs.lineHeight),
+    "--r-width": `${prefs.width}px`,
+    "--r-para": `${prefs.paragraphSpacing}em`,
+    "--r-align": prefs.align,
+  };
+  if (prefs.theme === "custom") {
+    cssVars["--r-bg"] = prefs.customBg;
+    cssVars["--r-page"] = prefs.customBg;
+    cssVars["--r-fg"] = prefs.customFg;
+    cssVars["--r-muted"] = `color-mix(in srgb, ${prefs.customFg} 70%, transparent)`;
+  }
+
+  const translateLabel = busy
+    ? progress || "Translating..."
+    : chapter?.pieces_done != null
+      ? `Resume translation (${chapter.pieces_done} done)`
+      : "Translate this chapter";
+
+  const textProps = {
+    terms: glossary,
+    termColors: prefs.termColors,
+    quotes: prefs.quotes,
+    brackets: prefs.brackets,
+  };
+
+  // The chapter text in the current view.
+  // The free web translation of a chapter, or why there is none yet.
+  function renderWeb(c: ChapterDetail) {
+    const mtNote =
+      mt && (mt.status === "queued" || mt.status === "running")
+        ? `Machine translation in progress (${mt.done}/${mt.total}). `
+        : "";
+    const body = renderWebInner(c);
+    return mtNote ? (
+      <>
+        <p className="small muted">{mtNote}Showing the in-browser translation meanwhile.</p>
+        {body}
+      </>
+    ) : (
+      body
+    );
+  }
+
+  function renderWebInner(c: ChapterDetail) {
+    if (!isZh) {
+      return <p className="small muted">Free translation supports Chinese books only.</p>;
+    }
+    if (webMode === undefined) return <p className="small muted">Checking free translation...</p>;
+    if (webMode === null) {
+      return (
+        <p className="small muted">
+          Free translation needs desktop Chrome — or translate with AI.
+        </p>
+      );
+    }
+    if (webMode === "download") {
+      return (
+        <p className="small muted">
+          <button className="secondary" onClick={downloadPack} disabled={packNote?.startsWith("Downloading")}>
+            Download language pack
+          </button>{" "}
+          {packNote ?? "One-time download so Chrome can translate on this device."}
+        </p>
+      );
+    }
+    const w = web[c.idx];
+    if (!w || w.status === "loading") {
+      return (
+        <p className="small muted">
+          <IconLoaderCircle size={14} className="spin" /> {w?.note || "Translating..."}
+        </p>
+      );
+    }
+    if (w.status === "error") {
+      return (
+        <div className="error">
+          {w.error}{" "}
+          <button className="secondary" onClick={() => retryWeb(c.idx)}>
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return (
+      <>
+        <div className="prose reader-text">
+          <GlossaryText text={(w.paras ?? []).join("\n\n")} {...textProps} />
+        </div>
+        <p className="small muted">Free machine translation, shown only in this browser.</p>
+      </>
+    );
+  }
+
+  function renderBody(c: ChapterDetail, v: View) {
+    if (v === "both") {
+      const t = effTrans(c, v);
+      return (
+        <div className="grid-2">
+          <div>
+            <div className="small muted">Source</div>
+            <div className="prose source reader-text">
+              <SourceText text={c.source_text} />
+            </div>
+          </div>
+          <div>
+            <div className="small muted">{t === "ai" ? "English (Gemini)" : t === "mt" ? "English (Google)" : "English (web)"}</div>
+            {t === "web" ? (
+              renderWeb(c)
+            ) : t === "mt" ? (
+              <div className="prose reader-text">
+                <GlossaryText text={c.translation_mt ?? ""} {...textProps} />
+              </div>
+            ) : (
+              <div className="prose reader-text">
+                <GlossaryText text={c.translation ?? ""} {...textProps} />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+    if (v === "google" && c.translation_mt) {
+      return (
+        <>
+          <div className="prose reader-text">
+            <GlossaryText text={c.translation_mt} {...textProps} />
+          </div>
+          <p className="small muted">Machine translation (Google).</p>
+        </>
+      );
+    }
+    if (v === "google") {
+      const w = web[c.idx];
+      const unavailable =
+        !isZh || webMode === null || webMode === "download" || w?.status === "error";
+      if (!unavailable) return renderWeb(c);
+      // Say why there is no translation, then fall back to the source text.
+      return (
+        <>
+          {renderWeb(c)}
+          <div className="prose source reader-text">
+            <SourceText text={c.source_text} />
+          </div>
+        </>
+      );
+    }
+    if (v === "gemini" && !c.translation) {
+      return (
+        <>
+          <p className="small muted">
+            No Gemini translation yet. Translate it with Gemini above, or switch the view to Source.
+          </p>
+          <div className="prose source reader-text">
+            <SourceText text={c.source_text} />
+          </div>
+        </>
+      );
+    }
+    if (v === "gemini" && c.translation) {
+      return (
+        <div className="prose reader-text">
+          <GlossaryText text={c.translation} {...textProps} />
+        </div>
+      );
+    }
+    if (v === "source") {
+      return (
+        <div className="prose source reader-text">
+          <SourceText text={c.source_text} />
+        </div>
+      );
+    }
+    return null;
+  }
+
+  function renderMeta(c: ChapterDetail) {
+    if (!c.translated_with || effTrans(c, view) !== "ai") return null;
+    return (
+      <p className="small muted" style={{ marginTop: 24 }}>
+        {c.complete ? (
+          <>
+            Translated with {c.translated_with}
+            {c.critic_passes
+              ? `, ${c.critic_passes} critic pass${c.critic_passes === 1 ? "" : "es"}`
+              : ""}
+            . Saved, so reopening it costs nothing.
+          </>
+        ) : (
+          <>
+            Partial translation
+            {c.pieces_done != null
+              ? ` — ${c.pieces_done} piece${c.pieces_done === 1 ? "" : "s"} done`
+              : ""}
+            . Press “Resume translation” above to finish it.
+          </>
+        )}
+      </p>
+    );
+  }
+
+  // Paragraphs of the chapter being read, for read-aloud.
+  const ttsParagraphs = () => {
+    const sec = articleRef.current?.querySelector<HTMLElement>(`section[data-ch="${curIdx}"]`);
+    if (!sec) return [];
+    let ps = Array.from(sec.querySelectorAll<HTMLElement>(".reader-text:not(.source) p"));
+    if (ps.length === 0) ps = Array.from(sec.querySelectorAll<HTMLElement>(".reader-text p"));
+    return ps;
+  };
+
+  const progressLabel = `Ch. ${curIdx + 1}${chapters.length ? ` / ${chapters.length}` : ""}`;
+
+  // Floating bottom toolbar: Prev · Ch. N / total · Next · Display/Settings.
+  const toolbar = (
+    <div
+      className="reader-nav reader-toolbar"
+      role="toolbar"
+      aria-label="Reader navigation"
+      style={{
+        position: "sticky",
+        bottom: 12,
+        zIndex: 20,
+        justifyContent: "center",
+        flexWrap: "wrap",
+        maxWidth: "var(--r-width)",
+        margin: "0 auto 12px",
+        padding: "8px 12px",
+        background: "var(--r-page)",
+        border: "1px solid var(--r-border)",
+        borderRadius: 999,
+        boxShadow: "0 4px 18px rgba(0, 0, 0, 0.25)",
+      }}
+    >
+      <button className="secondary" onClick={() => go(curIdx - 1)} disabled={!hasPrev}>
+        <IconChevronLeft size={16} /> Previous
+      </button>
+      <span className="small">{progressLabel}</span>
+      <button className="secondary" onClick={() => go(curIdx + 1)} disabled={!hasNext}>
+        Next <IconChevronRight size={16} />
+      </button>
+      <TtsControls chapterKey={curIdx} getParagraphs={ttsParagraphs} />
+      <button
+        className="secondary icon-btn"
+        onClick={() => setShowSettings((v) => !v)}
+        aria-label="Reader display and settings"
+        aria-expanded={showSettings}
+        title="Display and settings"
+      >
+        <IconType size={16} />
+      </button>
+    </div>
+  );
+
+  const divider = (
+    <hr
+      style={{
+        border: 0,
+        borderTop: "1px solid var(--r-border)",
+        margin: "36px 0 28px",
+      }}
+    />
+  );
 
   return (
-    <>
-      <div className="page-head" style={{ marginBottom: 10 }}>
-        <div className="small muted">
-          <Link href="/">Library</Link>
+    <div className="reader-root" data-theme={prefs.theme} style={cssVars as CSSProperties}>
+      <div className="reader-top">
+        <div className="small reader-crumbs">
+          <Link href="/library">Library</Link>
           {novel && (
             <>
               {" / "}
-              <Link href={`/novel?id=${novel.id}`}>{novel.title}</Link>
+              <Link href={`/novel?id=${novel.id}`} title={nvt?.hover}>{nvt?.text}</Link>
             </>
           )}
           {" / "}
-          {heading}
+          <span title={ht.hover}>{heading}</span>
         </div>
-      </div>
-
-      {err && <div className="error">{err}</div>}
-
-      <div className="reader-bar">
-        <div className="row">
-          <button
-            className="secondary"
-            onClick={() => go(chapterIdx - 1)}
-            disabled={!hasPrev}
-          >
-            Previous
-          </button>
-          <span className="small muted">
-            {chapterIdx + 1}
-            {chapters.length ? ` of ${chapters.length}` : ""}
-          </span>
-          <button
-            className="secondary"
-            onClick={() => go(chapterIdx + 1)}
-            disabled={!hasNext}
-          >
-            Next
-          </button>
-        </div>
-        <div className="row">
-          <div className="seg">
-            <button
-              className={view === "translation" ? "on" : ""}
-              onClick={() => setView("translation")}
-              disabled={!chapter?.translation}
-            >
-              Translation
-            </button>
-            <button
-              className={view === "source" ? "on" : ""}
-              onClick={() => setView("source")}
-            >
-              Source
-            </button>
-            <button
-              className={view === "both" ? "on" : ""}
-              onClick={() => setView("both")}
-              disabled={!chapter?.translation}
-            >
-              Both
-            </button>
+        {novel && (nvt?.hover || novel.author_en) && (
+          <div className="small muted">
+            Original: {[nvt?.hover, novel.author_en ? novel.author : null].filter(Boolean).join(" · ")}
           </div>
-          {chapter && !chapter.complete && (
-            <button onClick={translateThis} disabled={busy}>
-              {busy
-                ? progress || "Translating..."
-                : chapter.pieces_done != null
-                  ? `Resume translation (${chapter.pieces_done} done)`
-                  : "Translate this chapter"}
+        )}
+        <div className="row" style={{ gap: 8 }}>
+          {flagCount > 0 && novel && (
+            <Link
+              className="flag-marker"
+              href={`/novel?id=${novel.id}&tab=flags`}
+              title="Open review flags on this chapter"
+            >
+              <IconFlag size={14} /> {flagCount}
+            </Link>
+          )}
+          {signedIn && (
+            <button
+              className="secondary icon-btn"
+              onClick={toggleReading}
+              aria-label={onReading ? "Remove from Reading shelf" : "Add to Reading shelf"}
+              title={onReading ? "On your Reading shelf" : "Add to Reading shelf"}
+            >
+              {onReading ? <IconBookmarkCheck size={16} /> : <IconBookmark size={16} />}
             </button>
           )}
         </div>
       </div>
 
-      <div className="reader-pane">
-        <div className="panel">
-          <h2 style={{ marginTop: 0, fontSize: 19 }}>{heading}</h2>
-          {!chapter && <p className="muted">Loading...</p>}
+      {showSettings && (
+        <ReaderSettings
+          prefs={prefs}
+          onChange={changePrefs}
+          onClose={() => setShowSettings(false)}
+          view={view}
+          onViewChange={changeView}
+        />
+      )}
 
-          {chapter && view === "both" && chapter.translation && (
-            <div className="grid-2">
-              <div>
-                <div className="small muted">Source</div>
-                <div className="prose source">{chapter.source_text}</div>
-              </div>
-              <div>
-                <div className="small muted">English</div>
-                <div className="prose">{chapter.translation}</div>
-              </div>
+      {err && <div className="error">{err}</div>}
+      {keyRejected && (
+        <div className="error">
+          Your API key was rejected — check <Link href="/settings">Settings</Link>.
+        </div>
+      )}
+      {keyNeeded && (
+        <div className="error">
+          Translation needs an AI key. <Link href="/settings">Add your API key</Link>
+        </div>
+      )}
+
+      <article className="reader-page" ref={articleRef}>
+        <section data-ch={chapterIdx}>
+          <h2 className="reader-title" title={ht.hover}>{heading}</h2>
+          {!chapter && !err && <p className="muted">Loading...</p>}
+
+          {chapter && !chapter.complete && (
+            <div className="translate-box">
+              {signedIn ? (
+                <button onClick={() => translateThis()} disabled={busy}>
+                  {busy ? (
+                    <IconLoaderCircle size={16} className="spin" />
+                  ) : (
+                    <IconSparkles size={16} />
+                  )}{" "}
+                  {translateLabel}
+                </button>
+              ) : (
+                <span className="small muted">
+                  <Link href="/login">Sign in</Link> to translate this chapter.
+                </span>
+              )}
             </div>
           )}
 
-          {chapter && view === "translation" && chapter.translation && (
-            <div className="prose">{chapter.translation}</div>
+          {chapter && chapter.complete && isAdmin && (
+            <div className="translate-box">
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "Re-translate this chapter? The saved translation is replaced for every reader.",
+                    )
+                  )
+                    translateThis(true);
+                }}
+                title="Admin: replace the saved translation"
+              >
+                {busy ? (
+                  <IconLoaderCircle size={16} className="spin" />
+                ) : (
+                  <IconSparkles size={16} />
+                )}{" "}
+                {busy ? progress || "Translating..." : "Re-translate (force)"}
+              </button>
+            </div>
           )}
 
-          {chapter && view === "source" && (
-            <div className="prose source">{chapter.source_text}</div>
-          )}
-
-          {chapter && chapter.translated_with && view !== "source" && (
-            <p className="small muted" style={{ marginTop: 18 }}>
-              {chapter.complete ? (
-                <>
-                  Translated with {chapter.translated_with}
-                  {chapter.critic_passes
-                    ? `, ${chapter.critic_passes} critic pass${
-                        chapter.critic_passes === 1 ? "" : "es"
-                      }`
-                    : ""}
-                  . Saved, so reopening it costs nothing.
-                </>
-              ) : (
-                <>
-                  Partial translation
-                  {chapter.pieces_done != null
-                    ? ` — ${chapter.pieces_done} piece${
-                        chapter.pieces_done === 1 ? "" : "s"
-                      } done`
-                    : ""}
-                  . Press “Resume translation” above to finish it.
-                </>
-              )}
+          {newTerms !== null && newTerms > 0 && (
+            <p className="small new-terms">
+              {newTerms} new glossary term{newTerms === 1 ? "" : "s"}
             </p>
           )}
-        </div>
 
-        <div>
+          {chapter && renderBody(chapter, view)}
+          {chapter && renderMeta(chapter)}
+          {chapter && (
+            <ChapterComments
+              key={`c${chapterIdx}-${infinite}`}
+              novelId={novelId}
+              idx={chapterIdx}
+              session={session}
+              collapsed={infinite}
+            />
+          )}
+        </section>
+
+        {infinite &&
+          stream.map((it) => {
+            const c = it.chapter;
+            const t = titleFor(c, view);
+            const v: View = view === "gemini" && !c.translation ? "source" : view;
+            const wt =
+              effTrans(c, view) === "web" && !c.title_en && !c.title_mt ? web[it.idx]?.title : null;
+            return (
+              <section key={it.idx} data-ch={it.idx}>
+                {divider}
+                <h2 className="reader-title" title={t.hover}>
+                  {wt || t.text || `Chapter ${it.idx + 1}`}
+                </h2>
+                {!c.complete && (
+                  <div className="translate-box">
+                    <p className="small muted" style={{ margin: "0 0 8px" }}>
+                      {c.translation ? "Partially translated." : "Not translated yet."}
+                    </p>
+                    {signedIn ? (
+                      <button onClick={() => translateItem(it.idx)} disabled={it.busy}>
+                        {it.busy ? (
+                          <IconLoaderCircle size={16} className="spin" />
+                        ) : (
+                          <IconSparkles size={16} />
+                        )}{" "}
+                        {it.busy
+                          ? it.progress || "Translating..."
+                          : c.pieces_done != null
+                            ? `Resume translation (${c.pieces_done} done)`
+                            : "Translate this chapter"}
+                      </button>
+                    ) : (
+                      <span className="small muted">
+                        <Link href="/login">Sign in</Link> to translate this chapter.
+                      </span>
+                    )}
+                  </div>
+                )}
+                {it.keyRejected && (
+                  <div className="error">
+                    Your API key was rejected — check <Link href="/settings">Settings</Link>.
+                  </div>
+                )}
+                {it.keyNeeded && (
+                  <div className="error">
+                    Translation needs an AI key. <Link href="/settings">Add your API key</Link>
+                  </div>
+                )}
+                {it.err && <div className="error">{it.err}</div>}
+                {renderBody(c, v)}
+                <ChapterComments novelId={novelId} idx={it.idx} session={session} collapsed />
+              </section>
+            );
+          })}
+
+        {infinite && hasMore && !moreErr && (
+          <div ref={sentinelRef} aria-hidden="true" style={{ height: 1 }} />
+        )}
+        {infinite && loadingMore && (
+          <p className="small muted" style={{ textAlign: "center" }}>
+            <IconLoaderCircle size={16} className="spin" /> Loading next chapter...
+          </p>
+        )}
+        {infinite && moreErr && (
+          <div className="error">
+            {moreErr}{" "}
+            <button
+              className="secondary"
+              onClick={() => {
+                setMoreErr(null);
+                loadMore();
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {infinite && !hasMore && stream.length > 0 && (
+          <p className="small muted" style={{ textAlign: "center", marginTop: 28 }}>
+            End of available chapters.
+          </p>
+        )}
+      </article>
+
+      {toolbar}
+
+      <div className="reader-side">
+        {signedIn && (
           <div className="panel">
-            <h3 style={{ marginTop: 0, fontSize: 15 }}>Ask about this book</h3>
+            <h3 style={{ marginTop: 0, fontSize: 15 }}>
+              <IconMessageCircleQuestionMark size={16} /> Ask about the story
+            </h3>
             <p className="small muted">
-              Answers only use chapters up to this one, so nothing ahead is
-              spoiled.
+              Answers only use chapters up to your reading position, so nothing
+              ahead is spoiled.
             </p>
             <textarea
               style={{ minHeight: 70, fontFamily: "inherit" }}
@@ -294,6 +1355,17 @@ function ReaderInner() {
             <button onClick={ask} disabled={asking} style={{ marginTop: 8 }}>
               {asking ? "Thinking..." : "Ask"}
             </button>
+            {askKeyNeeded && (
+              <p className="small">
+                <Link href="/settings">Add your API key</Link> to ask questions.
+              </p>
+            )}
+            {askKeyRejected && (
+              <div className="error">
+                Your API key was rejected — check <Link href="/settings">Settings</Link>.
+              </div>
+            )}
+            {askErr && <div className="error">{askErr}</div>}
             {answer && (
               <>
                 <p style={{ marginBottom: 6 }}>{answer.answer}</p>
@@ -313,28 +1385,30 @@ function ReaderInner() {
               </>
             )}
           </div>
+        )}
 
-          {novel && (
-            <div className="panel">
-              <h3 style={{ marginTop: 0, fontSize: 15 }}>Quick links</h3>
-              <p className="small">
-                <Link href={`/glossary?novel=${novel.id}&up_to=${chapterIdx}`}>
-                  Glossary up to here
-                </Link>
-              </p>
-              <p className="small">
-                <Link href={`/kg?novel=${novel.id}&up_to=${chapterIdx}`}>
-                  Knowledge graph up to here
-                </Link>
-              </p>
-              <p className="small">
-                <Link href={`/novel?id=${novel.id}`}>All chapters</Link>
-              </p>
-            </div>
-          )}
-        </div>
+        {novel && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0, fontSize: 15 }}>
+              <IconSettings size={16} /> Quick links
+            </h3>
+            <p className="small">
+              <Link href={`/glossary?novel=${novel.id}&up_to=${curIdx}`}>
+                Glossary up to here
+              </Link>
+            </p>
+            <p className="small">
+              <Link href={`/kg?novel=${novel.id}&up_to=${curIdx}`}>
+                Knowledge graph up to here
+              </Link>
+            </p>
+            <p className="small">
+              <Link href={`/novel?id=${novel.id}`}>All chapters</Link>
+            </p>
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 

@@ -13,7 +13,7 @@ from typing import Iterable
 
 from ..common.logging import get_logger
 from ..common.textsplit import split_chunks
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient, LLMError
 from .prompts import TRANSLATOR_SYSTEM, TRANSLATOR_USER_TEMPLATE, TRANSLATOR_VERSION
 
 log = get_logger(__name__)
@@ -73,7 +73,7 @@ async def translate_paragraph(
     glossary: list[tuple[str, str]],
     target_lang: str,
     chapter_idx: int,
-    client: GeminiClient | None = None,
+    client: LLMClient,
 ) -> TranslationResult:
     if not paragraph.strip():
         return TranslationResult(translation="", new_terms=[], used_terms=[])
@@ -86,16 +86,19 @@ async def translate_paragraph(
         glossary_block=block,
         paragraph=paragraph,
     )
-    g = client or get_gemini()
     try:
-        data = await g.generate_json(
+        data = await client.generate_json(
             user,
             system=TRANSLATOR_SYSTEM,
             schema=_TRANSLATE_SCHEMA,
             temperature=0.2,
             max_output_tokens=4096,
         )
-    except Exception as e:
+    except LLMError:
+        # Key, quota or outage: the caller must see it (400/429/502). Swallowing
+        # it here once stored blank "translations" in the shared library.
+        raise
+    except Exception as e:  # noqa: BLE001 - unexpected shape; caller decides
         log.warning("translator.fail", chapter_idx=chapter_idx, err=str(e))
         return TranslationResult(translation="", new_terms=[], used_terms=used)
 
@@ -132,7 +135,7 @@ async def translate_chapter(
     glossary: list[tuple[str, str]],
     target_lang: str,
     chapter_idx: int,
-    client: GeminiClient | None = None,
+    client: LLMClient,
 ) -> TranslationResult:
     paras = split_paragraphs(chapter_text)
     if not paras:
@@ -149,6 +152,12 @@ async def translate_chapter(
             chapter_idx=chapter_idx,
             client=client,
         )
+        if p.strip() and not r.translation.strip():
+            # Never join blanks into a "complete" chapter.
+            raise LLMError(
+                "llm_upstream",
+                "the model returned an empty translation for part of the chapter",
+            )
         pieces.append(r.translation)
         all_new.extend(r.new_terms)
         all_used.extend(r.used_terms)
@@ -168,3 +177,93 @@ async def translate_chapter(
         new_terms=all_new,
         used_terms=all_used,
     )
+
+
+# --- titles ---------------------------------------------------------------
+
+_TITLE_SYSTEM = (
+    "You translate web-novel chapter and book titles. Reply with the translated "
+    "title only: one line, plain text, no quotation marks, no commentary. Keep "
+    "chapter numbering in the form 'Chapter 1: Title' (for example "
+    "'第一章 青云山下' becomes 'Chapter 1: Below Azure Cloud Mountain'). Use the "
+    "locked glossary renderings for any term they cover."
+)
+
+_QUOTES = "\"'`“”‘’「」『』"
+
+
+_TITLE_MAX = 512
+
+
+def _clean_title(raw: object) -> str:
+    """One line, no wrapping quotes, whitespace collapsed, at most 512 chars."""
+    text = " ".join(str(raw or "").split())
+    return text.strip(_QUOTES + " ").strip()[:_TITLE_MAX]
+
+
+def _title_glossary(titles: Iterable[str], glossary: list[tuple[str, str]]) -> str:
+    joined = "\n".join(titles)
+    return _format_glossary([(s, t) for s, t in glossary if s and s in joined])
+
+
+async def translate_title(
+    client: LLMClient,
+    title: str,
+    glossary: list[tuple[str, str]],
+    target_lang: str = "en",
+) -> str:
+    """Translate one title with the glossary. "" when the model gave nothing.
+
+    LLMError propagates like every other agent call; anything else is logged
+    and reported as an empty string so the caller leaves the title unset.
+    """
+    prompt = (
+        f"Target language: {target_lang}.\n"
+        f"Locked glossary (use exactly):\n{_title_glossary([title], glossary)}\n\n"
+        f"Title:\n{title}"
+    )
+    try:
+        raw = await client.generate(
+            prompt, system=_TITLE_SYSTEM, temperature=0.2, max_output_tokens=200
+        )
+    except LLMError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("translator.title_fail", err=str(e))
+        return ""
+    return _clean_title(raw)
+
+
+_TITLES_SCHEMA = {"type": "array", "items": {"type": "string"}}
+
+
+async def translate_titles_batch(
+    client: LLMClient,
+    titles: list[str],
+    glossary: list[tuple[str, str]],
+    target_lang: str = "en",
+) -> list[str | None]:
+    """Translate many titles in one call. Aligned with ``titles``; None where
+    the reply did not line up (wrong length) or an entry was blank."""
+    if not titles:
+        return []
+    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(titles))
+    prompt = (
+        f"Target language: {target_lang}.\n"
+        f"Locked glossary (use exactly):\n{_title_glossary(titles, glossary)}\n\n"
+        f"Translate each of these {len(titles)} titles. Reply with a JSON array of "
+        f"exactly {len(titles)} strings, in the same order.\n{numbered}"
+    )
+    try:
+        data = await client.generate_json(
+            prompt, system=_TITLE_SYSTEM, schema=_TITLES_SCHEMA,
+            temperature=0.2, max_output_tokens=4096,
+        )
+    except LLMError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("translator.titles_fail", err=str(e))
+        return [None] * len(titles)
+    if not isinstance(data, list) or len(data) != len(titles):
+        return [None] * len(titles)
+    return [_clean_title(x) or None for x in data]

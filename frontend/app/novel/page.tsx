@@ -4,12 +4,182 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import BookCover from "../../components/BookCover";
-import { api, ChapterRow, CRITIC_MAX_CHARS, Novel } from "../../lib/api";
+import Reviews from "../../components/Reviews";
+import { siteApi } from "../../lib/api-site";
+import { social } from "../../lib/api-social";
+import {
+  IconBookOpen,
+  IconCheck,
+  IconFlag,
+  IconLanguages,
+  IconList,
+  IconLock,
+  IconLockOpen,
+  IconPencil,
+  IconSearch,
+  IconX,
+} from "../../components/icons";
+import {
+  api,
+  ChapterRow,
+  CRITIC_MAX_CHARS,
+  displayAuthor,
+  displayTitle,
+  errorText,
+  GlossaryEntry,
+  KeyRequiredError,
+  Novel,
+  ReviewFlag,
+  Shelf,
+} from "../../lib/api";
+import { getSession, SESSION_EVENT, type Session } from "../../lib/session";
+
+const ANON_PROGRESS_KEY = "beyonder.anonProgress";
+
+function readAnonProgress(novelId: number): number {
+  try {
+    const raw = window.localStorage.getItem(ANON_PROGRESS_KEY);
+    if (!raw) return 0;
+    const v = (JSON.parse(raw) as Record<string, unknown>)[String(novelId)];
+    return typeof v === "number" && v >= 0 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+type Tab = "chapters" | "glossary" | "flags";
 
 function compactNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
   return String(n);
+}
+
+function CoverAdmin({ novelId, hasCover, onChanged }: { novelId: number; hasCover: boolean; onChanged: () => void }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      setUrl("");
+      onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <label>Cover (admin)</label>
+      <div className="row">
+        <input
+          type="file"
+          accept="image/*"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) run(() => social.uploadCover(novelId, f));
+          }}
+        />
+      </div>
+      <div className="row">
+        <input
+          type="url"
+          placeholder="or paste an image URL"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button className="secondary" disabled={busy || !url.trim()} onClick={() => run(() => social.setCoverUrl(novelId, url.trim()))}>
+          Set from URL
+        </button>
+        {hasCover && (
+          <button className="secondary" disabled={busy} onClick={() => run(() => social.removeCover(novelId))}>
+            Remove cover
+          </button>
+        )}
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
+function UpdateCheck({ novelId, onChanged }: { novelId: number; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  async function run() {
+    setBusy(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const { added, hint } = await siteApi.checkUpdates(novelId);
+      const base = added ? `Added ${added} new chapter${added === 1 ? "" : "s"}.` : "No new chapters.";
+      setMsg(hint ? `${base} ${hint}` : base);
+      if (added) onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <div className="row">
+        <button className="secondary" disabled={busy} onClick={run}>
+          {busy ? "Checking..." : "Check for new chapters"}
+        </button>
+        {msg && <span className="muted small" role="status">{msg}</span>}
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
+// Admin: make a book public (in the catalog for everyone) or private again.
+function VisibilityAdmin({
+  novelId,
+  visibility,
+  onChanged,
+}: {
+  novelId: number;
+  visibility: "public" | "private";
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const next = visibility === "private" ? "public" : "private";
+  async function flip() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.patchNovel(novelId, { visibility: next });
+      onChanged();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="field" style={{ marginTop: 8 }}>
+      <div className="row">
+        <button className="secondary" disabled={busy} onClick={flip}>
+          {busy ? "Saving..." : next === "public" ? "Publish" : "Unpublish"}
+        </button>
+        <span className="muted small">
+          {visibility === "private"
+            ? "Private: only the owner and admins can see this book."
+            : "Public: listed in the catalog for everyone."}
+        </span>
+      </div>
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -27,18 +197,45 @@ function BookInner() {
   const [editing, setEditing] = useState(false);
   const [running, setRunning] = useState(false);
   const [progressNote, setProgressNote] = useState<string | null>(null);
+  const [keyNeeded, setKeyNeeded] = useState(false);
   const [resumeAt, setResumeAt] = useState(0);
   // A ref, not state: the loop below reads it between awaits and would
   // otherwise close over the value from the render that started it.
   const stopped = useRef(false);
 
+  const [session, setSession] = useState<Session | null>(null);
+  const tabParam = params.get("tab");
+  const [tab, setTab] = useState<Tab>(
+    tabParam === "flags" || tabParam === "glossary" ? tabParam : "chapters",
+  );
+  const [shelf, setShelf] = useState<Shelf | "">("");
+  const [glossary, setGlossary] = useState<GlossaryEntry[] | null>(null);
+  const [flags, setFlags] = useState<ReviewFlag[] | null>(null);
+  const [flagStatus, setFlagStatus] = useState("open");
+  const [wrongInputs, setWrongInputs] = useState<Record<number, string>>({});
+  const [termEdits, setTermEdits] = useState<Record<number, string>>({});
+  const isAdmin = Boolean(session?.user.is_admin);
+
+  useEffect(() => {
+    const sync = () => setSession(getSession());
+    sync();
+    window.addEventListener(SESSION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
   // Edit form
   const [title, setTitle] = useState("");
+  const [titleEn, setTitleEn] = useState("");
   const [author, setAuthor] = useState("");
   const [tags, setTags] = useState("");
   const [status, setStatus] = useState("ongoing");
   const [lang, setLang] = useState("");
   const [description, setDescription] = useState("");
+  const [showOrigDesc, setShowOrigDesc] = useState(false);
 
   const load = useCallback(async () => {
     if (!novelId) return;
@@ -50,13 +247,14 @@ function BookInner() {
       setNovel(n);
       setChapters(ch);
       setTitle(n.title);
+      setTitleEn(n.title_en || "");
       setAuthor(n.author || "");
       setTags(n.tags.join(", "));
       setStatus(n.status);
       setLang(n.source_lang);
       setDescription(n.description || "");
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }, [novelId]);
 
@@ -64,13 +262,104 @@ function BookInner() {
     load();
   }, [load]);
 
+  // Signed in: progress and shelf live on the server. Otherwise this
+  // browser's own record (the reader writes it) is all there is.
+  const signedIn = session !== null;
   useEffect(() => {
     if (!novelId) return;
+    if (!signedIn) {
+      setResumeAt(readAnonProgress(novelId));
+      setShelf("");
+      return;
+    }
     api
       .getProgress(novelId)
       .then((p) => setResumeAt(p.current_chapter))
       .catch(() => undefined);
-  }, [novelId]);
+    api
+      .library()
+      .then((lib) => {
+        const found = (["reading", "plan", "completed"] as Shelf[]).find((k) =>
+          lib[k].some((n) => n.id === novelId),
+        );
+        setShelf(found || "");
+      })
+      .catch(() => undefined);
+  }, [novelId, signedIn]);
+
+  // The glossary depends on who is reading (server caps it at their
+  // progress), so drop the cache on sign-in/out or a different novel.
+  const userId = session?.user.id ?? null;
+  useEffect(() => {
+    setGlossary(null);
+  }, [novelId, userId]);
+
+  useEffect(() => {
+    if (!novelId) return;
+    if (tab === "glossary" && glossary === null) {
+      api.glossary(novelId).then(setGlossary).catch((e) => setErr(errorText(e)));
+    }
+  }, [novelId, tab, glossary]);
+
+  useEffect(() => {
+    if (!novelId || tab !== "flags") return;
+    setFlags(null);
+    api.flags(novelId, flagStatus).then(setFlags).catch((e) => setErr(errorText(e)));
+  }, [novelId, tab, flagStatus]);
+
+  async function changeShelf(value: string) {
+    const prev = shelf;
+    setShelf(value as Shelf | "");
+    try {
+      if (value) await api.setShelf(novelId, value as Shelf);
+      else await api.removeFromLibrary(novelId);
+    } catch (e) {
+      setShelf(prev);
+      setErr(errorText(e));
+    }
+  }
+
+  async function resolveFlag(f: ReviewFlag) {
+    setErr(null);
+    try {
+      await api.resolveFlag(f.id, (wrongInputs[f.id] || "").trim() || undefined);
+      setFlags((cur) => (cur ? cur.filter((x) => x.id !== f.id) : cur));
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  }
+
+  async function patchTerm(
+    t: GlossaryEntry,
+    body: { target_term?: string; locked?: boolean },
+  ) {
+    if (t.id == null) return;
+    setErr(null);
+    try {
+      await api.patchGlossaryTerm(novelId, t.id, body);
+      setGlossary((cur) =>
+        cur
+          ? cur.map((x) =>
+              x.id === t.id
+                ? {
+                    ...x,
+                    ...(body.target_term !== undefined
+                      ? { target_term: body.target_term }
+                      : {}),
+                    ...(body.locked !== undefined ? { locked: body.locked } : {}),
+                  }
+                : x,
+            )
+          : cur,
+      );
+      setTermEdits((cur) => {
+        const { [t.id as number]: _drop, ...rest } = cur;
+        return rest;
+      });
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  }
 
   async function saveEdits() {
     setBusy(true);
@@ -78,6 +367,7 @@ function BookInner() {
     try {
       await api.patchNovel(novelId, {
         title: title.trim(),
+        title_en: titleEn.trim(),
         author: author.trim(),
         description: description.trim(),
         tags: tags
@@ -91,7 +381,27 @@ function BookInner() {
       setNote("Saved.");
       await load();
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function translateTitles() {
+    setBusy(true);
+    setErr(null);
+    setKeyNeeded(false);
+    setNote(null);
+    try {
+      const r = await api.translateTitles(novelId);
+      setNote(
+        `Translated ${r.chapters} chapter title${r.chapters === 1 ? "" : "s"}` +
+          (r.novel ? " and the novel title." : "."),
+      );
+      await load();
+    } catch (e) {
+      if (e instanceof KeyRequiredError) setKeyNeeded(true);
+      else setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -105,7 +415,7 @@ function BookInner() {
       const res = await api.embed({ novel_id: novelId });
       setNote(`Indexed ${res.points} passages. Questions can search this book now.`);
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -155,6 +465,7 @@ function BookInner() {
     setRunning(true);
     stopped.current = false;
     setErr(null);
+    setKeyNeeded(false);
     let done = 0;
     try {
       for (const c of list) {
@@ -173,7 +484,8 @@ function BookInner() {
         );
       }
     } catch (e) {
-      setErr(String(e));
+      if (e instanceof KeyRequiredError) setKeyNeeded(true);
+      else setErr(errorText(e));
       setProgressNote(`Stopped after ${done}. Saved progress is kept.`);
     } finally {
       setRunning(false);
@@ -191,7 +503,7 @@ function BookInner() {
 
   async function remove() {
     const ok = window.confirm(
-      `Delete "${novel?.title}" and every chapter, translation and glossary term that came from it? This cannot be undone.`,
+      `Delete "${novel?.title_en || novel?.title}" and every chapter, translation and glossary term that came from it? This cannot be undone.`,
     );
     if (!ok) return;
     setBusy(true);
@@ -199,7 +511,7 @@ function BookInner() {
       await api.deleteNovel(novelId);
       router.push("/");
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
       setBusy(false);
     }
   }
@@ -221,19 +533,27 @@ function BookInner() {
   const pct = novel.chapter_count
     ? Math.round((novel.translated_count / novel.chapter_count) * 100)
     : 0;
+  const nt = displayTitle(novel.title, novel.title_en);
+  const na = displayAuthor(novel.author, novel.author_en);
   const untranslated = chapters.filter((c) => !c.translated).length;
 
   return (
     <>
       <div className="page-head">
         <div className="small muted">
-          <Link href="/">Library</Link> / {novel.title}
+          <Link href="/">Library</Link> /{" "}
+          <span title={nt.hover}>{nt.text}</span>
         </div>
       </div>
 
       <div className="panel">
         <div className="book-head">
-          <BookCover title={novel.title} id={novel.id} size="lg" />
+          <BookCover
+            title={nt.text}
+            id={novel.id}
+            size="lg"
+            visibility={novel.visibility}
+          />
           <div className="info">
             {editing ? (
               <>
@@ -244,6 +564,14 @@ function BookInner() {
                       type="text"
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>English title</label>
+                    <input
+                      type="text"
+                      value={titleEn}
+                      onChange={(e) => setTitleEn(e.target.value)}
                     />
                   </div>
                   <div className="field">
@@ -298,29 +626,63 @@ function BookInner() {
                 </div>
                 <div className="row">
                   <button onClick={saveEdits} disabled={busy}>
-                    Save
+                    <IconCheck /> <span>Save</span>
                   </button>
                   <button className="secondary" onClick={() => setEditing(false)}>
-                    Cancel
+                    <IconX /> <span>Cancel</span>
                   </button>
                 </div>
               </>
             ) : (
               <>
-                <h1>{novel.title}</h1>
-                <div className="muted">{novel.author || "Unknown author"}</div>
+                <h1 title={nt.hover}>{nt.text}</h1>
+                <div className="muted" title={na.hover}>{na.text || "Unknown author"}</div>
+                {(nt.hover || na.hover) && (
+                  <div className="small muted">
+                    Original: {[nt.hover, na.hover].filter(Boolean).join(" · ")}
+                  </div>
+                )}
                 <div className="pill-row">
                   <span className={`pill status-${novel.status}`}>
                     {novel.status}
                   </span>
                   <span className="pill">{novel.source_lang}</span>
+                  {novel.visibility === "private" && (
+                    <span className="pill" title="Only the owner and admins can see this book">
+                      Private
+                    </span>
+                  )}
                   {novel.tags.map((t) => (
                     <span className="pill" key={t}>
                       {t}
                     </span>
                   ))}
                 </div>
-                {novel.description && <p>{novel.description}</p>}
+                {(novel.description_en || novel.description) && (
+                  <p>
+                    {showOrigDesc || !novel.description_en ? novel.description : novel.description_en}
+                  </p>
+                )}
+                {novel.description_en && novel.description && (
+                  <button className="secondary" onClick={() => setShowOrigDesc((v) => !v)}>
+                    {showOrigDesc ? "Show English" : "Show original"}
+                  </button>
+                )}
+                {isAdmin && (
+                  <CoverAdmin
+                    novelId={novel.id}
+                    hasCover={Boolean((novel as { has_cover?: boolean }).has_cover)}
+                    onChanged={load}
+                  />
+                )}
+                {isAdmin && <UpdateCheck novelId={novel.id} onChanged={load} />}
+                {isAdmin && (
+                  <VisibilityAdmin
+                    novelId={novel.id}
+                    visibility={novel.visibility ?? "public"}
+                    onChanged={load}
+                  />
+                )}
                 <div className="stat-row">
                   <div className="stat">
                     <span className="v">{novel.chapter_count}</span>
@@ -335,25 +697,46 @@ function BookInner() {
                     <span className="l">Translated</span>
                   </div>
                 </div>
+                {signedIn && (
+                  <div className="row">
+                    <label className="small muted" htmlFor="shelf-select">
+                      Shelf
+                    </label>
+                    <select
+                      id="shelf-select"
+                      value={shelf}
+                      onChange={(e) => changeShelf(e.target.value)}
+                      style={{ width: "auto" }}
+                    >
+                      <option value="">Not in my library</option>
+                      <option value="reading">Reading</option>
+                      <option value="plan">Plan to read</option>
+                      <option value="completed">Completed</option>
+                    </select>
+                  </div>
+                )}
                 <div className="row">
                   <Link href={`/reader?novel=${novel.id}&ch=${resumeAt}`}>
                     <button>
-                      {resumeAt > 0
-                        ? `Continue from chapter ${resumeAt + 1}`
-                        : "Start reading"}
+                      <IconBookOpen />{" "}
+                      <span>
+                        {resumeAt > 0
+                          ? `Continue from chapter ${resumeAt + 1}`
+                          : "Start reading"}
+                      </span>
                     </button>
                   </Link>
-                  {untranslated > 0 && (
+                  {signedIn && untranslated > 0 && (
                     <>
                       <button onClick={() => translateSome(3)} disabled={running}>
-                        {running ? "Working..." : "Translate next 3"}
+                        <IconLanguages /> <span>{running ? "Working..." : "Translate next 3"}</span>
                       </button>
                       <button
                         className="secondary"
                         onClick={translateAll}
                         disabled={running}
                       >
-                        Translate all {untranslated}
+                        <IconLanguages /> <span>Translate all {untranslated}</span>
                       </button>
                     </>
                   )}
@@ -364,21 +747,27 @@ function BookInner() {
                         stopped.current = true;
                       }}
                     >
-                      Stop
+                      <IconX /> <span>Stop</span>
                     </button>
                   )}
-                  <button className="secondary" onClick={embedAll} disabled={busy}>
-                    {busy ? "Working..." : "Index for search"}
-                  </button>
-                  <button className="secondary" onClick={() => setEditing(true)}>
-                    Edit details
-                  </button>
-                  <Link href={`/glossary?novel=${novel.id}`}>
-                    <button className="secondary">Glossary</button>
-                  </Link>
-                  <button className="secondary" onClick={remove} disabled={busy}>
-                    Delete
-                  </button>
+                  {signedIn && (
+                    <button className="secondary" onClick={embedAll} disabled={busy}>
+                      <IconSearch /> <span>{busy ? "Working..." : "Index for search"}</span>
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <>
+                      <button className="secondary" onClick={translateTitles} disabled={busy}>
+                        <IconLanguages /> <span>{busy ? "Working..." : "Translate titles"}</span>
+                      </button>
+                      <button className="secondary" onClick={() => setEditing(true)}>
+                        <IconPencil /> <span>Edit details</span>
+                      </button>
+                      <button className="secondary" onClick={remove} disabled={busy}>
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -386,10 +775,172 @@ function BookInner() {
         </div>
       </div>
 
+      {keyNeeded && (
+        <div className="error">
+          This needs an AI key. <Link href="/settings">Add your API key</Link>
+        </div>
+      )}
       {err && <div className="error">{err}</div>}
       {note && <div className="notice">{note}</div>}
       {progressNote && <div className="notice">{progressNote}</div>}
 
+      <div className="tabs">
+        {(
+          [
+            ["chapters", "Chapters"],
+            ["glossary", "Glossary"],
+            ["flags", "Review flags"],
+          ] as [Tab, string][]
+        ).map(([k, label]) => {
+          const TabIcon = k === "chapters" ? IconList : k === "glossary" ? IconLanguages : IconFlag;
+          return (
+          <button
+            key={k}
+            className={`tab ${tab === k ? "active" : ""}`}
+            onClick={() => setTab(k)}
+          >
+            <TabIcon /> <span>{label}</span>
+          </button>
+          );
+        })}
+      </div>
+
+      {tab === "glossary" && (
+        <div className="panel">
+          {glossary === null && <p className="muted">Loading...</p>}
+          {glossary !== null && glossary.length === 0 && (
+            <p className="muted">No glossary terms yet.</p>
+          )}
+          {glossary !== null && glossary.length > 0 && (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Translation</th>
+                  <th>Kind</th>
+                  <th>From ch.</th>
+                  {isAdmin && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {glossary.map((t, i) => {
+                  const editable = isAdmin && t.id != null;
+                  const draft = t.id != null ? termEdits[t.id] : undefined;
+                  return (
+                    <tr key={t.id ?? `${t.source_term}-${i}`}>
+                      <td>{t.source_term}</td>
+                      <td>
+                        {editable && t.id != null ? (
+                          <input
+                            type="text"
+                            value={draft ?? t.target_term}
+                            onChange={(e) =>
+                              setTermEdits((cur) => ({
+                                ...cur,
+                                [t.id as number]: e.target.value,
+                              }))
+                            }
+                          />
+                        ) : (
+                          t.target_term
+                        )}
+                        {t.locked && (
+                          <span className="pill">
+                            <IconLock size={12} /> locked
+                          </span>
+                        )}
+                      </td>
+                      <td>{t.kind}</td>
+                      <td>{t.first_chapter + 1}</td>
+                      {isAdmin && (
+                        <td>
+                          {editable && (
+                            <div className="row">
+                              <button
+                                className="secondary"
+                                disabled={
+                                  draft === undefined ||
+                                  !draft.trim() ||
+                                  draft.trim() === t.target_term
+                                }
+                                onClick={() =>
+                                  patchTerm(t, { target_term: (draft || "").trim() })
+                                }
+                              >
+                                <IconCheck /> <span>Save</span>
+                              </button>
+                              <button
+                                className="secondary"
+                                onClick={() => patchTerm(t, { locked: !t.locked })}
+                              >
+                                {t.locked ? <IconLockOpen /> : <IconLock />}{" "}
+                                <span>{t.locked ? "Unlock" : "Lock"}</span>
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {tab === "flags" && (
+        <div className="panel">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <select
+              value={flagStatus}
+              onChange={(e) => setFlagStatus(e.target.value)}
+              style={{ width: "auto" }}
+              aria-label="Flag status"
+            >
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+            </select>
+          </div>
+          {flags === null && <p className="muted">Loading...</p>}
+          {flags !== null && flags.length === 0 && (
+            <p className="muted">No {flagStatus} flags.</p>
+          )}
+          {flags?.map((f) => (
+            <div className="flag-item" key={f.id} style={{ padding: "10px 0" }}>
+              <div className="small muted">
+                <Link href={`/reader?novel=${novel.id}&ch=${f.chapter_idx}`}>
+                  Chapter {f.chapter_idx + 1}
+                </Link>{" "}
+                · {f.kind.replace(/_/g, " ")}
+              </div>
+              {f.source_span && <div>Source: {f.source_span}</div>}
+              {f.target_span && <div>Translation: {f.target_span}</div>}
+              {f.note && <div className="small muted">{f.note}</div>}
+              {isAdmin && f.status === "open" && (
+                <div className="row" style={{ marginTop: 6 }}>
+                  {f.kind === "glossary_drift" && (
+                    <input
+                      type="text"
+                      placeholder="Wrong rendering (optional)"
+                      value={wrongInputs[f.id] || ""}
+                      onChange={(e) =>
+                        setWrongInputs((cur) => ({ ...cur, [f.id]: e.target.value }))
+                      }
+                      style={{ width: 220 }}
+                    />
+                  )}
+                  <button className="secondary" onClick={() => resolveFlag(f)}>
+                    <IconCheck /> <span>Resolve</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "chapters" && (
       <div className="panel">
         <div className="page-head" style={{ marginBottom: 10 }}>
           <div>
@@ -412,19 +963,30 @@ function BookInner() {
               href={`/reader?novel=${novel.id}&ch=${c.idx}`}
             >
               <span className="num">{c.idx + 1}</span>
-              <span className="name">{c.title || `Chapter ${c.idx + 1}`}</span>
+              <span className="name" title={displayTitle(c.title, c.title_en).hover}>
+                {displayTitle(c.title, c.title_en).text || `Chapter ${c.idx + 1}`}
+              </span>
               <span className="flag">{compactNumber(c.char_count)}</span>
+              {c.mt && (
+                <span className="flag done" title="Machine (Google) translation available">G</span>
+              )}
               <span className={`flag ${c.translated ? "done" : ""}`}>
                 {c.translated
-                  ? "translated"
+                  ? "AI"
                   : c.pieces_done != null
                     ? `in progress (${c.pieces_done} done)`
-                    : "source only"}
+                    : c.mt
+                      ? ""
+                      : "source only"}
               </span>
             </Link>
           ))}
         </div>
       </div>
+      )}
+      {novel.visibility !== "private" && (
+        <Reviews novelId={novel.id} session={session} />
+      )}
     </>
   );
 }

@@ -25,9 +25,9 @@ def test_splitter_fallback_no_headers():
 def test_oversized_section_is_split_even_though_a_header_matched():
     # A page of many short stories under one volume marker used to arrive as a
     # single enormous chapter: a header existed, so the length fallback never
-    # ran. Real imports hit this, and a 40k-character "chapter" is unusable.
+    # ran. Real imports hit this, and a 60k+-character "chapter" is unusable.
     para = "段落文字。" * 200
-    text = "第01卷\n\n" + ("\n\n".join([para] * 20))
+    text = "第01卷\n\n" + ("\n\n".join([para] * 70))
     parts = split_chapters(text)
     assert len(parts) > 1
     assert all(len(p.text) < 8000 for p in parts)
@@ -36,7 +36,7 @@ def test_oversized_section_is_split_even_though_a_header_matched():
 
 def test_oversized_split_keeps_the_header_title_on_the_parts():
     para = "段落文字。" * 200
-    text = "第01卷\n\n" + ("\n\n".join([para] * 20))
+    text = "第01卷\n\n" + ("\n\n".join([para] * 70))
     parts = split_chapters(text)
     assert parts[0].title == "第01卷"
     # Later pieces stay attributable to the section they came from.
@@ -56,7 +56,7 @@ def test_scraped_text_without_blank_lines_still_splits():
     # Page extractors join blocks with single newlines, so a scraped book can
     # contain no blank lines at all. Splitting only on blank lines left the
     # whole thing as one indivisible unit.
-    body = "\n".join("段落文字。" * 40 for _ in range(180))
+    body = "\n".join("段落文字。" * 40 for _ in range(320))
     parts = split_chapters("第01卷\n" + body)
     assert len(parts) > 1
     assert max(len(p.text) for p in parts) < 8000

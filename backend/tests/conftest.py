@@ -1,0 +1,65 @@
+import os
+
+import pytest
+
+
+@pytest.fixture
+def db_session():
+    """A session on a throwaway Postgres schema; skips unless TEST_DATABASE_URL.
+
+    Tables are created fresh and dropped afterwards, so point this at a
+    scratch database, never at real data.
+    """
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL not set")
+
+    import app.storage.db as db
+    from app.storage.models import Base
+    from sqlalchemy import text
+
+    db._engine = None
+    db._SessionLocal = None
+    engine = db.init_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with db.get_session() as s:
+        yield s
+    Base.metadata.drop_all(engine)
+    db._engine = None
+    db._SessionLocal = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttles():
+    """Login limits are process-wide; without a reset, later tests that log in
+    as the same email hit the 5-per-window cap left over from earlier ones."""
+    from app.api.auth_routes import reset_throttles
+
+    reset_throttles()
+    yield
+    reset_throttles()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_network(monkeypatch):
+    """New books enqueue machine translation and a cover search; both talk to
+    the network. Off by default in tests; the tests that exercise them turn
+    them back on with HTTP mocked."""
+    from app.common.config import settings
+
+    monkeypatch.setattr(settings, "mt_provider", "off")
+    monkeypatch.setattr(settings, "auto_covers", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_google_client_backoff():
+    """The provider remembers captcha'd client ids process-wide; tests start clean."""
+    from app.mt import google_free
+
+    google_free._blocked_until.clear()
+    yield
+    google_free._blocked_until.clear()

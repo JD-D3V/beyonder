@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
-    gemini_embed_model: str = "gemini-embedding-001"
     gemini_rpm_limit: int = 15
     gemini_concurrency: int = 3
 
@@ -35,19 +34,31 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql://beyonder:beyonder@localhost:5433/beyonder"
 
+    # Optional self-hosted LibreTranslate for the reader's free "Web" mode.
+    # Unset: /mt/status reports unavailable and /mt/translate is a 404.
+    libretranslate_url: str = ""
+
+    # Server-side machine translation of every added book.
+    # google_free = Google's unofficial web endpoint (can be rate limited or
+    # blocked); libretranslate uses LIBRETRANSLATE_URL; off disables it.
+    mt_provider: str = "google_free"
+    mt_rps: float = Field(default=1.0, gt=0)
+    # Look for a cover (og:image etc.) when a book is imported from a URL.
+    auto_covers: bool = True
+
     # Backend
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     log_level: str = "INFO"
 
-    # Shared secret required on every request except /health. Empty means the
-    # API is open, which is the right default for local development. The
-    # deployed site cannot embed this: it is typed into the browser once.
-    api_token: str = ""
+    # Owner account, consumed once by `python -m app.scripts.create_admin`.
+    admin_email: str = ""
+    admin_password: str = ""
+    session_days: int = 30
 
     # Comma-separated list of browser origins allowed to call this API.
-    # "*" allows any origin. The token, not the origin list, is what keeps
-    # other people out; CORS only governs which pages a browser lets talk here.
+    # "*" allows any origin. CORS only governs which pages a browser lets talk
+    # here; accounts and sessions are what gate writes.
     cors_origins: str = "http://localhost:3000"
 
     # URL ingestion: "auto" uses a headless browser when one is installed and
@@ -55,25 +66,29 @@ class Settings(BaseSettings):
     # is what small cloud instances want.
     scraper_backend: str = "auto"
 
+    # Hours between automatic new-chapter checks of public URL-imported books.
+    # 0 turns the in-process loop off (use `make check-updates` from cron).
+    auto_update_hours: float = Field(default=0, ge=0)
+
+    # Number of trusted reverse proxies in front of the app. 0 ignores
+    # X-Forwarded-For (client-controlled) and keys the login throttle on the
+    # socket peer. N takes the Nth entry from the right: the address appended
+    # by the outermost trusted proxy.
+    trust_proxy_hops: int = Field(default=0, ge=0)
+
     # Spoiler default
     default_current_chapter: int = 0
 
     # Embedding config
-    embedding_dim: int = 768  # gemini-embedding-001, requested via output_dimensionality
+    embedding_dim: int = 384  # must match embed_model_name
+    embed_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     chunk_target_tokens: int = 500
     chunk_overlap_tokens: int = 50
-
-    # Translator retry
-    critic_max_retries: int = 2
 
     # Eval
     eval_target_qa_accuracy: float = 0.85
     eval_target_term_consistency: float = 0.85
     eval_target_spoiler_leakage: float = 0.0
-
-    @property
-    def is_private(self) -> bool:
-        return bool(self.api_token)
 
     @property
     def has_gemini(self) -> bool:

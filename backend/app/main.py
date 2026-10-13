@@ -7,16 +7,32 @@ In Docker the same command runs.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+import asyncio
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.auth_routes import router as auth_router
 from .api.router import router
-from .common.auth import TokenAuthMiddleware
 from .common.config import settings
 from .common.logging import get_logger
+from .ingest.auto_update import update_loop
+from .ingest.toc_import import mark_interrupted_jobs, sweep_loop
+from .llm.client import LLMError
+from .mt.job import sweep_loop as mt_sweep_loop
 from .storage.db import init_engine
 
 log = get_logger(__name__)
+
+_LLM_STATUS = {"llm_key_invalid": 400, "llm_rate_limited": 429, "llm_upstream": 502}
+
+
+async def llm_error_handler(request: Request, exc: LLMError) -> JSONResponse:
+    return JSONResponse(
+        status_code=_LLM_STATUS.get(exc.code, 502),
+        content={"detail": {"code": exc.code, "detail": str(exc)}},
+    )
 
 
 def create_app() -> FastAPI:
@@ -27,19 +43,18 @@ def create_app() -> FastAPI:
     )
     # CORS — the frontend is always on another origin, locally (container port
     # mapping) and in production (static host vs API host). Set CORS_ORIGINS.
-    # Order matters: this runs before CORS on the way in, and a 401 still needs
-    # CORS headers on the way out for the browser to show the body rather than
-    # an opaque network error. Starlette applies middleware in reverse order of
-    # registration, so registering auth first puts CORS outermost.
-    app.add_middleware(TokenAuthMiddleware)
+    # The frontend is always on another origin (container port mapping locally,
+    # static host vs API host in production). Set CORS_ORIGINS.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+    app.add_exception_handler(LLMError, llm_error_handler)
     app.include_router(router)
+    app.include_router(auth_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -48,11 +63,22 @@ def create_app() -> FastAPI:
             "startup",
             model=settings.gemini_model,
             cors=settings.cors_origin_list,
-            private=settings.is_private,
-            embed_model=settings.gemini_embed_model,
+            embed_model=settings.embed_model_name,
             db=settings.database_url.split("@")[-1],
             qdrant=settings.qdrant_url,
         )
+        try:
+            n = mark_interrupted_jobs()
+            if n:
+                log.warning("startup.import_jobs_interrupted", count=n)
+        except Exception as e:  # noqa: BLE001 - e.g. migrations not applied yet
+            log.warning("startup.import_jobs_check_failed", err=str(e))
+        app.state.import_sweep = asyncio.create_task(sweep_loop())
+        app.state.mt_sweep = asyncio.create_task(mt_sweep_loop())
+        if settings.auto_update_hours > 0:
+            app.state.auto_update = asyncio.create_task(
+                update_loop(settings.auto_update_hours)
+            )
 
     return app
 

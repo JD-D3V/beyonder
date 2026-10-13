@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class NovelOut(BaseModel):
@@ -10,27 +11,68 @@ class NovelOut(BaseModel):
 
     id: int
     title: str
+    title_en: Optional[str] = None
     author: Optional[str] = None
+    author_en: Optional[str] = None
     description: Optional[str] = None
+    description_en: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     status: str = "ongoing"
     source_lang: str
     source_url: Optional[str] = None
     chapter_count: int = 0
     char_count: int = 0
-    translated_count: int = 0
+    translated_count: int = 0  # chapters with a complete translation (either engine)
+    ai_translated_count: int = 0
     updated_at: Optional[str] = None
+    views_total: int = 0
+    rating_avg: Optional[float] = None
+    rating_count: int = 0
+    has_cover: bool = False
+    cover_version: Optional[str] = None
+    visibility: str = "public"
+
+
+class RankedNovelOut(NovelOut):
+    """A catalog entry with its place in a ranking window."""
+
+    views: int = 0
+    rank: int = 0
+
+
+class CoverUrlIn(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class LibraryItemOut(NovelOut):
+    """A shelved book plus where this reader is up to."""
+
+    current_chapter: int = 0
+
+
+class LibraryOut(BaseModel):
+    reading: list[LibraryItemOut] = Field(default_factory=list)
+    plan: list[LibraryItemOut] = Field(default_factory=list)
+    completed: list[LibraryItemOut] = Field(default_factory=list)
+
+
+class ShelfIn(BaseModel):
+    shelf: Literal["reading", "plan", "completed"]
 
 
 class NovelPatch(BaseModel):
     """Edit book metadata. Omitted fields are left alone."""
 
     title: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    title_en: Optional[str] = Field(default=None, max_length=512)
     author: Optional[str] = Field(default=None, max_length=256)
     description: Optional[str] = None
+    author_en: Optional[str] = Field(default=None, max_length=256)
+    description_en: Optional[str] = None
     tags: Optional[list[str]] = None
     status: Optional[str] = Field(default=None, pattern="^(ongoing|completed|hiatus)$")
     source_lang: Optional[str] = Field(default=None, max_length=8)
+    visibility: Optional[Literal["public", "private"]] = None
 
 
 class ChapterOut(BaseModel):
@@ -38,8 +80,10 @@ class ChapterOut(BaseModel):
 
     idx: int
     title: Optional[str] = None
+    title_en: Optional[str] = None
     char_count: int = 0
-    translated: bool = False  # complete only
+    translated: bool = False  # complete AI translation only
+    mt: bool = False  # a machine translation exists
     # Set while a resumable translation is mid-flight (pieces done so far).
     pieces_done: Optional[int] = None
 
@@ -49,9 +93,12 @@ class ChapterDetail(BaseModel):
 
     idx: int
     title: Optional[str] = None
+    title_en: Optional[str] = None
     char_count: int = 0
     source_text: str
-    translation: Optional[str] = None
+    translation: Optional[str] = None  # AI only
+    translation_mt: Optional[str] = None  # machine translation
+    title_mt: Optional[str] = None
     translated_with: Optional[str] = None
     critic_passes: Optional[int] = None
     # A full translation exists. False when untranslated, or when a resumable
@@ -68,12 +115,46 @@ class IngestTextIn(BaseModel):
     author: Optional[str] = Field(default=None, max_length=256)
     description: Optional[str] = None
     tags: Optional[list[str]] = None
+    # Non-admins always import private; admins default to public.
+    visibility: Optional[Literal["public", "private"]] = None
 
 
 class IngestUrlIn(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     urls: list[str] = Field(min_length=1)
     source_lang: Optional[str] = None
+    # Table-of-contents page for later "check for new chapters"; defaults to
+    # the first URL.
+    index_url: Optional[str] = Field(default=None, max_length=1024)
+    visibility: Optional[Literal["public", "private"]] = None
+
+
+class UpdateCheckResult(BaseModel):
+    added: int
+    embedded: bool = True
+    hint: str | None = None
+
+
+class IngestTocIn(BaseModel):
+    index_url: str = Field(min_length=1, max_length=1024)
+    title: Optional[str] = Field(default=None, max_length=512)
+    max_chapters: int = Field(default=200, ge=1, le=500)
+    visibility: Optional[Literal["public", "private"]] = None
+
+
+class ImportJobOut(BaseModel):
+    id: int
+    novel_id: Optional[int] = None
+    status: Literal["queued", "running", "done", "failed"]
+    total: int
+    done: int
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IngestTocAccepted(BaseModel):
+    job_id: int
 
 
 class IngestResult(BaseModel):
@@ -96,13 +177,16 @@ class TranslateIn(BaseModel):
     novel_id: int
     chapter_idx: int
     target_lang: str = "en"
+    # Admin only: overwrite an existing complete translation.
+    force: bool = False
 
 
 class TranslateResult(BaseModel):
     chapter_idx: int
     translation: str
-    new_terms: int
+    new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
     critic_passes: int
+    title_en: Optional[str] = None
 
 
 class TranslateStepIn(BaseModel):
@@ -111,6 +195,9 @@ class TranslateStepIn(BaseModel):
     novel_id: int
     chapter_idx: int
     target_lang: str = "en"
+    # Admin only: discard a complete translation and start over. Send it on the
+    # first call only; later calls resume the partial it created.
+    force: bool = False
 
 
 class TranslateStepResult(BaseModel):
@@ -121,14 +208,31 @@ class TranslateStepResult(BaseModel):
     # A piece came back empty this call (transient rate-limit / model outage).
     # No progress and nothing corrupted — pause and call again.
     stalled: bool = False
+    # Terms first persisted this call (seed hits and any the model found).
+    new_terms: list["GlossaryEntryOut"] = Field(default_factory=list)
+    title_en: Optional[str] = None
+
+
+class MtStatusOut(BaseModel):
+    """Machine-translation progress for a book (chapters translated / total)."""
+
+    status: Literal["none", "queued", "running", "done", "failed"] = "none"
+    done: int = 0
+    total: int = 0
+
+
+class TitlesTranslateResult(BaseModel):
+    chapters: int
+    novel: bool
 
 
 class AskIn(BaseModel):
     novel_id: int
-    question: str
-    current_chapter: int
+    question: str = Field(min_length=1, max_length=2000)
+    # Ignored: the server uses the stored per-account position.
+    current_chapter: Optional[int] = None
     answer_lang: str = "en"
-    top_k: int = 8
+    top_k: int = Field(default=8, ge=1, le=20)
 
 
 class CitationOut(BaseModel):
@@ -145,6 +249,8 @@ class AskOut(BaseModel):
 
 
 class GlossaryEntryOut(BaseModel):
+    id: Optional[int] = None
+    locked: bool = False
     source_term: str
     target_term: str
     kind: str
@@ -172,7 +278,6 @@ class KgOut(BaseModel):
 
 
 class ProgressIn(BaseModel):
-    handle: str = "demo"
     novel_id: int
     current_chapter: int
 
@@ -189,6 +294,8 @@ class TranslateBatchIn(BaseModel):
 
 class TranslateBatchResult(BaseModel):
     translated: list[int] = Field(default_factory=list)
+    # Chapters someone else finished while we worked; ours was not saved.
+    lost_race: list[int] = Field(default_factory=list)
     remaining: int = 0
     done: bool = False
     # Set when the run stopped early. Chapters already finished are still saved.
@@ -196,6 +303,41 @@ class TranslateBatchResult(BaseModel):
 
 
 class ProgressOut(BaseModel):
-    handle: str
     novel_id: int
     current_chapter: int
+
+
+class GlossaryPatch(BaseModel):
+    target_term: Optional[str] = Field(default=None, max_length=256)
+    locked: Optional[bool] = None
+
+    @field_validator("target_term")
+    @classmethod
+    def _strip_nonempty(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("target_term must not be blank")
+        return v
+
+
+TranslateResult.model_rebuild()
+TranslateStepResult.model_rebuild()
+
+
+class ReviewFlagOut(BaseModel):
+    id: int
+    novel_id: int
+    chapter_idx: int
+    kind: str
+    source_span: str
+    target_span: str
+    note: str
+    status: str
+    created_at: Optional[datetime] = None
+    resolved_by: Optional[int] = None
+
+
+class ResolveFlagIn(BaseModel):
+    wrong_rendering: Optional[str] = None

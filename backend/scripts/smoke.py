@@ -21,6 +21,7 @@ from app.common.config import settings  # noqa: E402
 from app.common.logging import get_logger  # noqa: E402
 from app.embed.pipeline import embed_chapters  # noqa: E402
 from app.graph.orchestrator import run_translation_graph  # noqa: E402
+from app.llm.client import LLMClient  # noqa: E402
 from app.ingest.splitter import ParsedChapter  # noqa: E402
 from app.storage.db import init_engine, get_session  # noqa: E402
 from app.storage.repository import (  # noqa: E402
@@ -84,8 +85,12 @@ async def main() -> int:
     pts = await embed_chapters(novel_id, chaps)
     log.info("smoke.embed_done", points=pts)
 
+    if not settings.gemini_api_key:
+        raise SystemExit("GEMINI_API_KEY is empty; set it in .env to run the smoke test")
+    llm = LLMClient("gemini", settings.gemini_api_key)
     log.info("smoke.translate_start")
     state = await run_translation_graph(
+        llm=llm,
         novel_id=novel_id,
         novel_title="Smoke Test Novel",
         source_lang="zh",

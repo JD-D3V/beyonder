@@ -1,11 +1,10 @@
 """LangGraph wiring for the translation pipeline.
 
 Nodes:
-    extract -> translate -> critic -> (retry translate) -> persist
+    seed -> extract -> translate -> critic -> relate -> persist
 
-Branching:
-    after critic, if violations and retries left, loop back to translate with
-    the critic's suggested_fix as a seed; otherwise persist.
+The critic is non-blocking: it fixes known glossary drift, records review
+flags, and never sends the chapter back for retranslation.
 """
 from __future__ import annotations
 
@@ -13,19 +12,27 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langgraph.graph import END, StateGraph
+from langchain_core.runnables import RunnableConfig
 
 from ..agents.critic import critique_translation
 from ..agents.extractor import extract_terms_from_chapter
 from ..agents.relation import extract_relations_from_chapter
-from ..agents.translator import translate_chapter
-from ..common.config import settings
+from ..agents.translator import translate_chapter, translate_title
 from ..common.logging import get_logger
-from ..embed.gemini import get_gemini
+from ..glossary.seed import match_seed
+from ..llm.client import LLMClient, LLMError
+from ..review.checks import deterministic_flags
 from ..storage.db import get_session
 from ..storage.repository import (
     get_chapter_by_idx,
+    get_novel,
     get_terms_for_chapters,
     insert_relations,
+    insert_seed_terms,
+    load_variants,
+    replace_open_flags,
+    term_dicts,
+    update_novel,
     upsert_terms,
     upsert_translation,
 )
@@ -42,19 +49,31 @@ class TranslateState:
     chapter_idx: int
     chapter_text: str = ""
     chapter_db_id: int | None = None
+    chapter_title: str | None = None
+    # The book title still needs translating (chapter 0 of a novel without one).
+    need_novel_title: bool = False
 
     # populated as we go
     glossary: list[tuple[str, str]] = field(default_factory=list)
     new_terms: list[dict] = field(default_factory=list)
     relations: list[dict] = field(default_factory=list)
     translation: str = ""
+    title_en: str | None = None
+    novel_title_en: str | None = None
     critic_passes: int = 0
-    retries_left: int = settings.critic_max_retries
+    flags: list[dict] = field(default_factory=list)
+    variants: dict[str, list[str]] = field(default_factory=dict)
     done: bool = False
     error: str | None = None
+    # Set when a complete translation appeared meanwhile and we did not overwrite.
+    lost_race: bool = False
 
 
 # --- nodes ---------------------------------------------------------------
+
+def _llm(config: RunnableConfig) -> LLMClient:
+    return config["configurable"]["llm"]
+
 
 def _skip(state: TranslateState) -> dict[str, Any]:
     """A node that has nothing to do still has to write something.
@@ -79,17 +98,45 @@ async def node_load(state: TranslateState) -> dict[str, Any]:
             target_lang=state.target_lang,
         )
         gloss = [(t.source_term, t.target_term) for t in terms]
+        variants = load_variants(s, state.novel_id)
+        novel = get_novel(s, state.novel_id)
+        need_novel_title = (
+            state.chapter_idx == 0 and novel is not None and not novel.title_en
+        )
     return {
+        "chapter_title": chap.title,
+        "need_novel_title": need_novel_title,
         "chapter_text": chap.source_text,
         "chapter_db_id": chap.id,
         "glossary": gloss,
+        "variants": variants,
     }
 
 
-async def node_extract(state: TranslateState) -> dict[str, Any]:
+async def node_seed(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
+    """Add built-in xianxia terms found in the chapter that the glossary lacks."""
+    if state.error or not state.chapter_text:
+        return _skip(state)
+    known = {src for src, _ in state.glossary}
+    hits = match_seed(state.chapter_text, known)
+    if not hits:
+        return _skip(state)
+    added_by = config["configurable"].get("translated_by")
+    for h in hits:
+        h["first_chapter"] = state.chapter_idx
+        h["added_by"] = added_by
+        h["_seed"] = True
+    merged = list(state.glossary) + [
+        (h["source_term"], h["target_term"]) for h in hits
+    ]
+    return {"new_terms": list(state.new_terms) + hits, "glossary": merged}
+
+
+async def node_extract(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     new_terms = await extract_terms_from_chapter(
+        client=_llm(config),
         novel_title=state.novel_title,
         source_lang=state.source_lang,
         chapter_idx=state.chapter_idx,
@@ -102,14 +149,15 @@ async def node_extract(state: TranslateState) -> dict[str, Any]:
         pair = (t["source_term"], t["target_term"])
         if pair not in merged:
             merged.append(pair)
-    return {"new_terms": new_terms, "glossary": merged}
+    return {"new_terms": list(state.new_terms) + new_terms, "glossary": merged}
 
 
-async def node_translate(state: TranslateState) -> dict[str, Any]:
+async def node_translate(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     result = await translate_chapter(
         state.chapter_text,
+        client=_llm(config),
         glossary=list(state.glossary),
         target_lang=state.target_lang,
         chapter_idx=state.chapter_idx,
@@ -120,37 +168,77 @@ async def node_translate(state: TranslateState) -> dict[str, Any]:
         pair = (t["source_term"], t["target_term"])
         if pair not in merged_gloss:
             merged_gloss.append(pair)
+    # Titles use the finished glossary. A title failure (LLMError) must not
+    # discard the finished chapter: leave it null, the admin backfill route
+    # fills it later. Other failures are logged by translate_title.
+    title_en = None
+    if state.chapter_title and state.chapter_title.strip():
+        try:
+            title_en = (
+                await translate_title(_llm(config), state.chapter_title, merged_gloss)
+                or None
+            )
+        except LLMError as e:
+            log.warning("translate.chapter_title_failed", err=str(e))
+    novel_title_en = None
+    if state.need_novel_title and state.novel_title.strip():
+        try:
+            novel_title_en = (
+                await translate_title(_llm(config), state.novel_title, merged_gloss)
+                or None
+            )
+        except LLMError as e:
+            log.warning("translate.novel_title_failed", err=str(e))
     return {
+        "title_en": title_en,
+        "novel_title_en": novel_title_en,
         "translation": result.translation,
         "new_terms": merged_new,
         "glossary": merged_gloss,
     }
 
 
-async def node_critic(state: TranslateState) -> dict[str, Any]:
+async def node_critic(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.translation:
         return _skip(state)
-    res = await critique_translation(
-        source=state.chapter_text,
-        candidate=state.translation,
-        glossary=list(state.glossary),
-    )
-    out: dict[str, Any] = {"critic_passes": state.critic_passes + 1}
-    if res.ok or state.retries_left <= 0:
-        out["done"] = True
-    else:
-        if res.suggested_fix:
-            out["translation"] = res.suggested_fix
-        out["retries_left"] = state.retries_left - 1
-        out["done"] = False
-    return out
+    try:
+        res = await critique_translation(
+            client=_llm(config),
+            source=state.chapter_text,
+            candidate=state.translation,
+            glossary=list(state.glossary),
+            variants=state.variants,
+        )
+    except LLMError as e:
+        if e.code not in ("llm_rate_limited", "llm_upstream"):
+            raise  # a bad key is bad for everything
+        # QA is non-blocking: never throw away a paid translation because the
+        # critic's call failed. Keep deterministic checks, skip the LLM flags.
+        log.warning("graph.critic_unavailable", code=e.code)
+        fixed, flags = deterministic_flags(
+            state.chapter_text, state.translation,
+            list(state.glossary), state.variants or {},
+        )
+        return {
+            "critic_passes": state.critic_passes + 1,
+            "translation": fixed or state.translation,
+            "flags": flags,
+            "done": True,
+        }
+    return {
+        "critic_passes": state.critic_passes + 1,
+        "translation": res.fixed_text or state.translation,
+        "flags": res.flags,
+        "done": True,
+    }
 
 
-async def node_relations(state: TranslateState) -> dict[str, Any]:
+async def node_relations(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error or not state.chapter_text:
         return _skip(state)
     entities = [s for s, _ in state.glossary]
     rels = await extract_relations_from_chapter(
+        client=_llm(config),
         novel_title=state.novel_title,
         chapter_idx=state.chapter_idx,
         chapter_text=state.chapter_text,
@@ -159,29 +247,57 @@ async def node_relations(state: TranslateState) -> dict[str, Any]:
     return {"relations": rels}
 
 
-async def node_persist(state: TranslateState) -> dict[str, Any]:
+async def node_persist(state: TranslateState, config: RunnableConfig) -> dict[str, Any]:
     if state.error:
         return _skip(state)
+    if state.chapter_text.strip() and not state.translation.strip():
+        # Backstop: a blank result for a non-empty chapter is a model failure,
+        # never something to save (it would be served as "complete").
+        raise LLMError("llm_upstream", "the model returned an empty translation")
+    wrote = True
+    persisted: list[dict] = []
     with get_session() as s:
         if state.new_terms:
-            # Re-fetch fresh: assign embeddings via separate flow if needed
-            upsert_terms(
-                s,
-                novel_id=state.novel_id,
-                entries=state.new_terms,
-                target_lang=state.target_lang,
-            )
+            added_by = config["configurable"].get("translated_by")
+            for t in state.new_terms:
+                t.setdefault("added_by", added_by)
+            seed_hits = [t for t in state.new_terms if t.get("_seed")]
+            others = [t for t in state.new_terms if not t.get("_seed")]
+            created: list = []
+            if seed_hits:
+                # Seed hits only fill gaps; they never modify an existing row.
+                created += insert_seed_terms(
+                    s, novel_id=state.novel_id, entries=seed_hits,
+                    target_lang=state.target_lang,
+                )
+            if others:
+                upsert_terms(
+                    s, novel_id=state.novel_id, entries=others,
+                    target_lang=state.target_lang, created_out=created,
+                )
+            persisted = term_dicts(created)
         if state.relations:
             insert_relations(s, novel_id=state.novel_id, entries=state.relations)
         if state.translation and state.chapter_db_id is not None:
-            upsert_translation(
+            wrote = upsert_translation(
                 s,
                 chapter_id=state.chapter_db_id,
                 target_lang=state.target_lang,
                 text=state.translation,
-                model=get_gemini().model_name,
+                model=_llm(config).model_name,
                 critic_passes=state.critic_passes,
+                translated_by=config["configurable"].get("translated_by"),
+                overwrite=bool(config["configurable"].get("overwrite", False)),
+                title=state.title_en,
             )
+            if wrote and state.novel_title_en:
+                novel = get_novel(s, state.novel_id)
+                if novel is not None and not novel.title_en:
+                    update_novel(s, state.novel_id, title_en=state.novel_title_en)
+            if wrote:
+                replace_open_flags(
+                    s, state.novel_id, state.chapter_idx, state.flags
+                )
     log.info(
         "graph.persist",
         novel_id=state.novel_id,
@@ -190,18 +306,19 @@ async def node_persist(state: TranslateState) -> dict[str, Any]:
         new_terms=len(state.new_terms),
         relations=len(state.relations),
     )
-    return {"done": True}
+    out: dict[str, Any] = {"done": True, "lost_race": wrote is False}
+    if state.new_terms:
+        # Report only rows created by this call (they carry ids).
+        out["new_terms"] = persisted
+    return out
 
 
 # --- graph ---------------------------------------------------------------
 
-def _route_after_critic(state: TranslateState) -> str:
-    return "persist" if state.done else "translate"
-
-
 def build_translation_graph():
     g = StateGraph(TranslateState)
     g.add_node("load", node_load)
+    g.add_node("seed", node_seed)
     g.add_node("extract", node_extract)
     g.add_node("translate", node_translate)
     g.add_node("critic", node_critic)
@@ -209,14 +326,11 @@ def build_translation_graph():
     g.add_node("persist", node_persist)
 
     g.set_entry_point("load")
-    g.add_edge("load", "extract")
+    g.add_edge("load", "seed")
+    g.add_edge("seed", "extract")
     g.add_edge("extract", "translate")
     g.add_edge("translate", "critic")
-    g.add_conditional_edges(
-        "critic",
-        _route_after_critic,
-        {"translate": "translate", "persist": "relate"},
-    )
+    g.add_edge("critic", "relate")
     g.add_edge("relate", "persist")
     g.add_edge("persist", END)
     return g.compile()
@@ -224,11 +338,14 @@ def build_translation_graph():
 
 async def run_translation_graph(
     *,
+    llm: LLMClient,
     novel_id: int,
     novel_title: str,
     source_lang: str,
     target_lang: str,
     chapter_idx: int,
+    translated_by: int | None = None,
+    overwrite: bool = False,
 ) -> TranslateState:
     graph = build_translation_graph()
     init = TranslateState(
@@ -238,7 +355,7 @@ async def run_translation_graph(
         target_lang=target_lang,
         chapter_idx=chapter_idx,
     )
-    final = await graph.ainvoke(init)
+    final = await graph.ainvoke(init, config={"configurable": {"llm": llm, "translated_by": translated_by, "overwrite": overwrite}})
     # LangGraph returns a dict-like snapshot; merge it back into a dataclass.
     if isinstance(final, dict):
         out = TranslateState(

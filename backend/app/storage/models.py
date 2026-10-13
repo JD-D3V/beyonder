@@ -12,26 +12,34 @@ Schema design notes
   semantic glossary search (catches surface variants like 渡劫/度劫).
 - ``relations`` is the knowledge graph adjacency list. ``first_chapter`` is the
   spoiler key — drop relations whose first_chapter > user.current_chapter.
-- ``users`` holds the per-user reading position. v1 has a single demo user.
+- ``users`` are invite-only accounts (one admin); ``sessions`` hold hashed bearer
+  tokens, ``invites`` single-use signup codes, ``reading_progress`` the per-user
+  spoiler key, ``library_entries`` personal shelves.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
+    select,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, mapped_column, relationship
 
 from ..common.config import settings
 
@@ -42,16 +50,37 @@ class Base(DeclarativeBase):
 
 class Novel(Base):
     __tablename__ = "novels"
+    __table_args__ = (
+        CheckConstraint(
+            "visibility IN ('public', 'private')", name="ck_novels_visibility"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(512))
+    # Translated (English) book title; NULL until translated or edited.
+    title_en: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     author: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # English renderings filled by the machine-translation job (title_en above
+    # is shared with the AI path); NULL until translated.
+    author_en: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    description_en: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Comma-separated and lowercased. See the 0002 migration for why not a join.
     tags: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="ongoing")
     source_lang: Mapped[str] = mapped_column(String(8), default="zh")
     source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # Table-of-contents page that new chapters are discovered from.
+    source_index_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # "public" books are in the catalog; "private" ones are visible only to
+    # their owner and to admins (everyone else gets a 404).
+    visibility: Mapped[str] = mapped_column(
+        String(16), default="public", server_default="public"
+    )
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -83,6 +112,8 @@ class Chapter(Base):
     title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     source_text: Mapped[str] = mapped_column(Text)
     char_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Page this chapter was scraped from (URL imports only).
+    source_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
     novel: Mapped[Novel] = relationship(back_populates="chapters")
     translations: Mapped[list["Translation"]] = relationship(
@@ -93,7 +124,10 @@ class Chapter(Base):
 class Translation(Base):
     __tablename__ = "translations"
     __table_args__ = (
-        UniqueConstraint("chapter_id", "target_lang", name="uq_translation_chap_lang"),
+        UniqueConstraint(
+            "chapter_id", "target_lang", "engine", name="uq_translation_chap_lang_engine"
+        ),
+        CheckConstraint("engine IN ('ai', 'mt')", name="ck_translations_engine"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -101,7 +135,13 @@ class Translation(Base):
         ForeignKey("chapters.id", ondelete="CASCADE")
     )
     target_lang: Mapped[str] = mapped_column(String(8))
+    # 'ai' (LLM pipeline, BYOK) or 'mt' (server-side machine translation).
+    engine: Mapped[str] = mapped_column(
+        String(8), default="ai", server_default="ai"
+    )
     text: Mapped[str] = mapped_column(Text)
+    # Translated chapter title for this language; NULL until translated.
+    title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     model: Mapped[str] = mapped_column(String(64))
     critic_passes: Mapped[int] = mapped_column(Integer, default=0)
     # Resumable translation progress. NULL means complete: both legacy rows and
@@ -110,6 +150,9 @@ class Translation(Base):
     # far, and ``text`` holds the assembled prefix — a partial the next
     # /translate/step call resumes from.
     pieces_done: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    translated_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -137,6 +180,13 @@ class Term(Base):
     first_chapter: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Locked terms are curated by an admin; automatic upserts never change them.
+    locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    added_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     embedding: Mapped[Optional[list[float]]] = mapped_column(
         Vector(settings.embedding_dim), nullable=True
     )
@@ -168,9 +218,266 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    handle: Mapped[str] = mapped_column(String(64), unique=True)
-    # JSON-ish mapping: {novel_id: current_chapter_idx}. Kept simple for v1.
-    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    # Always stored lowercased and stripped (done in code, not the database).
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    # Public name shown on reviews and comments; never derived from the email.
+    display_name: Mapped[Optional[str]] = mapped_column(
+        String(24), unique=True, nullable=True
+    )
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class UserSession(Base):
+    """Named ``UserSession`` so it cannot be confused with sqlalchemy's Session."""
+
+    __tablename__ = "sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    used_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # used_by is SET NULL when the invitee is deleted; used_at is not, so a
+    # claimed invite stays spent.
+    used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReadingProgress(Base):
+    __tablename__ = "reading_progress"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LibraryEntry(Base):
+    __tablename__ = "library_entries"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    shelf: Mapped[str] = mapped_column(String(16))  # reading | plan | completed
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ImportJob(Base):
+    """A background table-of-contents import (see ``ingest/toc_import.py``)."""
+
+    __tablename__ = "import_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')",
+            name="ck_import_jobs_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    novel_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("novels.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    done: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Per-process boot id of the worker that owns the job (see toc_import.BOOT_ID).
+    boot_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MtJob(Base):
+    """Machine-translation progress for one book (see ``app/mt/job.py``)."""
+
+    __tablename__ = "mt_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')",
+            name="ck_mt_jobs_status",
+        ),
+    )
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    done: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    boot_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ReviewFlag(Base):
+    """A non-blocking QA note on a translated chapter."""
+
+    __tablename__ = "review_flags"
+    __table_args__ = (
+        Index("ix_review_flags_novel_status_chapter", "novel_id", "status", "chapter_idx"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer)
+    # glossary_drift | unknown_name | pronoun | idiom | untranslated
+    kind: Mapped[str] = mapped_column(String(24))
+    source_span: Mapped[str] = mapped_column(Text, default="")
+    target_span: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="open", server_default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class NovelDailyStat(Base):
+    """Per-novel, per-day view counters that feed the rankings."""
+
+    __tablename__ = "novel_daily_stats"
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    views: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    readers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class Review(Base):
+    """One star rating (and optional text) per user per novel."""
+
+    __tablename__ = "reviews"
+    __table_args__ = (
+        UniqueConstraint("novel_id", "user_id", name="uq_review_novel_user"),
+        CheckConstraint("rating BETWEEN 1 AND 5", name="ck_review_rating"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    rating: Mapped[int] = mapped_column(Integer)
+    body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Comment(Base):
+    """A chapter comment; replies are one level deep (parent_id of a top-level)."""
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        Index("ix_comments_novel_chapter_created", "novel_id", "chapter_idx", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("comments.id", ondelete="CASCADE"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    deleted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+
+
+class ContentReport(Base):
+    """A user's report of a review or comment, for admin triage."""
+
+    __tablename__ = "content_reports"
+    __table_args__ = (
+        UniqueConstraint("kind", "target_id", "reporter_id", name="uq_report_once"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # review | comment
+    target_id: Mapped[int] = mapped_column(Integer)
+    reporter_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+
+
+class NovelCover(Base):
+    """One normalised WebP cover per novel, kept in Postgres."""
+
+    __tablename__ = "novel_covers"
+
+    novel_id: Mapped[int] = mapped_column(
+        ForeignKey("novels.id", ondelete="CASCADE"), primary_key=True
+    )
+    content_type: Mapped[str] = mapped_column(String(64), default="image/webp")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# Cheap per-row cover marker (no blob load) so catalog queries can report
+# has_cover / cover_version without a second round trip.
+Novel.cover_updated_at = column_property(
+    select(NovelCover.updated_at)
+    .where(NovelCover.novel_id == Novel.id)
+    .correlate_except(NovelCover)
+    .scalar_subquery()
+)

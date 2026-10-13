@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..common.logging import get_logger
-from ..embed.gemini import GeminiClient, get_gemini
+from ..llm.client import LLMClient, LLMError
 from .prompts import EXTRACTOR_SYSTEM, EXTRACTOR_USER_TEMPLATE, EXTRACTOR_VERSION
 
 log = get_logger(__name__)
@@ -59,7 +59,7 @@ async def extract_terms_from_chapter(
     chapter_idx: int,
     chapter_text: str,
     known_terms: Iterable[tuple[str, str]] = (),
-    client: GeminiClient | None = None,
+    client: LLMClient,
     max_chars: int = 12000,
 ) -> list[dict]:
     """Return a list of dicts with source_term/target_term/kind/confidence/notes/first_chapter."""
@@ -73,16 +73,17 @@ async def extract_terms_from_chapter(
         known_terms=_format_known(known_terms),
         chapter_text=body,
     )
-    g = client or get_gemini()
     try:
-        data = await g.generate_json(
+        data = await client.generate_json(
             user,
             system=EXTRACTOR_SYSTEM,
             schema=_EXTRACT_SCHEMA,
             temperature=0.1,
             max_output_tokens=4096,
         )
-    except Exception as e:
+    except LLMError:
+        raise  # key/quota/outage surfaces as 400/429/502
+    except Exception as e:  # noqa: BLE001 - bad shape: no terms
         log.warning("extractor.fail", chapter_idx=chapter_idx, err=str(e))
         return []
     terms = data.get("terms", []) if isinstance(data, dict) else []

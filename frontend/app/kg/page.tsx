@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, KgEdge, KgNode, KgOut } from "../../lib/api";
+import { api, errorText, KgEdge, KgNode, KgOut } from "../../lib/api";
 
 interface Pos {
   x: number;
@@ -94,13 +94,15 @@ const KIND_COLOR: Record<string, string> = {
 function KgInner() {
   const params = useSearchParams();
   const novelId = Number(params.get("novel") || "0");
-  const upTo = Number(params.get("up_to") || "100000");
+  const upToParam = params.get("up_to");
+  const upToNum = upToParam === null || upToParam.trim() === "" ? NaN : Number(upToParam);
+  const upTo = Number.isFinite(upToNum) && upToNum >= 0 ? upToNum : undefined;
   const [data, setData] = useState<KgOut | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!novelId) return;
-    api.kg(novelId, upTo).then(setData).catch((e) => setErr(String(e)));
+    api.kg(novelId, upTo).then(setData).catch((e) => setErr(errorText(e)));
   }, [novelId, upTo]);
 
   const W = 900;
@@ -125,7 +127,7 @@ function KgInner() {
     <div>
       <h1>Knowledge Graph</h1>
       <p className="muted">
-        Up to chapter {upTo === 100000 ? "∞" : upTo}. Nothing past your reading position is rendered.
+        {upTo === undefined ? "Up to your reading position." : `Up to chapter ${upTo}.`} Nothing past your reading position is rendered.
       </p>
       {err && <div className="error">{err}</div>}
       <div className="panel" style={{ overflow: "auto" }}>

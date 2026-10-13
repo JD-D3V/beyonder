@@ -6,12 +6,14 @@
 #   .\run.ps1 frontend  # start Next.js in Docker (host never touches npm)
 #   .\run.ps1 smoke     # end-to-end Gemini sanity check
 #   .\run.ps1 test      # run pytest
+#   .\run.ps1 admin     # create the single owner account (ADMIN_EMAIL/ADMIN_PASSWORD in .env)
+#   .\run.ps1 reembed   # rebuild Qdrant vectors with the local embedding model
 #   .\run.ps1 eval      # run full eval and refresh dashboard JSON
 #   .\run.ps1 down      # stop infra
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet("up", "migrate", "backend", "api", "frontend", "frontend-build", "smoke", "test", "eval", "down", "doctor")]
+    [ValidateSet("up", "migrate", "backend", "api", "frontend", "frontend-build", "smoke", "test", "admin", "reembed", "eval", "down", "doctor")]
     [string]$Cmd = "doctor"
 )
 
@@ -81,6 +83,18 @@ switch ($Cmd) {
         Activate-Venv
         Set-Location (Join-Path $REPO "backend")
         & pytest -q
+    }
+    "admin" {
+        Ensure-Env
+        Activate-Venv
+        Set-Location (Join-Path $REPO "backend")
+        & python -m app.scripts.create_admin
+    }
+    "reembed" {
+        Ensure-Env
+        Activate-Venv
+        Set-Location (Join-Path $REPO "backend")
+        & python -m app.scripts.reembed
     }
     "eval" {
         Ensure-Env

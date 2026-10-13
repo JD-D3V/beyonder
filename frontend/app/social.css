@@ -1,0 +1,29 @@
+.rating-summary { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.rating-big { font-size: 36px; font-weight: 700; line-height: 1; }
+.rating-big small { font-size: 14px; font-weight: 400; color: var(--muted); display: block; margin-top: 4px; }
+.hist { flex: 1; min-width: 200px; max-width: 360px; }
+.hist-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.hist-row .bar { flex: 1; height: 8px; border-radius: 4px; background: var(--panel-2, rgba(128,128,128,.2)); overflow: hidden; }
+.hist-row .bar i { display: block; height: 100%; background: var(--accent-2, #f0883e); }
+.hist-row .n { width: 28px; text-align: right; }
+.stars { color: var(--accent-2, #f0883e); letter-spacing: 1px; white-space: nowrap; }
+.star-pick button { background: none; border: 0; padding: 0 2px; font-size: 26px; cursor: pointer; color: var(--muted); line-height: 1; }
+.star-pick button.on { color: var(--accent-2, #f0883e); }
+.social-item { padding: 12px 0; border-top: 1px solid var(--border); }
+.social-item .meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.social-item .meta b { color: inherit; }
+.social-item .body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
+.social-item .acts { display: flex; gap: 12px; }
+.link-btn { background: none; border: 0; padding: 0; color: var(--muted); font-size: 12px; cursor: pointer; text-decoration: underline; }
+.link-btn:hover { color: inherit; }
+.social-replies { margin-left: 20px; border-left: 2px solid var(--border); padding-left: 12px; }
+.social-form textarea { width: 100%; min-height: 70px; font-family: inherit; }
+.social-form .row { margin-top: 6px; }
+.chapter-comments { margin-top: 32px; }
+.chapter-comments summary { cursor: pointer; font-weight: 600; }
+.reader-root .social-item, .reader-root .social-replies { border-color: var(--r-border, var(--border)); }
+.reader-root .link-btn, .reader-root .social-item .meta { color: var(--r-muted, var(--muted)); }
+.tts-bar { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tts-bar select { width: auto; max-width: 150px; font-size: 12px; padding: 2px 4px; }
+.tts-bar input[type=range] { width: 70px; }
+.tts-active { background: color-mix(in srgb, var(--accent, #58a6ff) 25%, transparent); border-radius: 4px; }
